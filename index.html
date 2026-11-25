@@ -1,0 +1,819 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finance API Tester</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #677083; --line: #e2e5ea;
+  --accent: #2f5bd3; --accent-text: #ffffff; --ok: #1f7a46; --warn: #a15c00; --bad: #b42318;
+  --ok-bg: #e7f5ec; --warn-bg: #fff4e0; --bad-bg: #fdecea; --code: #f1f3f6; --hover: #f2f5fb;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c; --panel: #1c2027; --text: #e6e9ef; --muted: #98a1b3; --line: #2c323c;
+    --accent: #6d8ff0; --accent-text: #0e1220; --ok: #5cc98a; --warn: #f0b45a; --bad: #f28b82;
+    --ok-bg: #173324; --warn-bg: #3a2c12; --bad-bg: #3b1d1b; --code: #232833; --hover: #222833;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+button, input, select, textarea { font: inherit; color: inherit; }
+input, select, textarea { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; width: 100%; }
+textarea { min-height: 70px; resize: vertical; }
+select[multiple] { min-height: 110px; }
+button { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+button:hover { background: var(--hover); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+button.danger { color: var(--bad); }
+button.small { padding: 2px 8px; font-size: 12px; }
+button:disabled { opacity: .5; cursor: default; }
+code, pre { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; }
+pre { background: var(--code); padding: 10px; border-radius: 6px; overflow: auto; max-height: 360px; margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; }
+
+header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+header h1 { font-size: 15px; margin: 0 8px 0 0; }
+header .base { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 260px; max-width: 420px; }
+header .base label { color: var(--muted); white-space: nowrap; }
+header .who { margin-left: auto; display: flex; gap: 8px; align-items: center; color: var(--muted); }
+
+.layout { display: grid; grid-template-columns: 220px minmax(0, 1fr) 380px; height: calc(100vh - 53px); }
+nav { border-right: 1px solid var(--line); background: var(--panel); overflow: auto; padding: 8px 0; }
+nav h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 12px 16px 4px; }
+nav a { display: block; padding: 5px 16px; color: inherit; text-decoration: none; border-left: 3px solid transparent; }
+nav a:hover { background: var(--hover); }
+nav a.active { border-left-color: var(--accent); background: var(--hover); font-weight: 600; }
+main { overflow: auto; padding: 16px 20px 40px; }
+aside { border-left: 1px solid var(--line); background: var(--panel); overflow: auto; display: flex; flex-direction: column; }
+
+.titlebar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.titlebar h2 { margin: 0; font-size: 18px; }
+.titlebar .grow { flex: 1; }
+.endpoint { color: var(--muted); font-size: 12px; }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 12px; }
+.filters .f { display: flex; flex-direction: column; gap: 2px; min-width: 140px; flex: 0 1 180px; }
+.filters .f label { font-size: 12px; color: var(--muted); }
+.totals { display: flex; gap: 16px; flex-wrap: wrap; margin: 0 0 10px; color: var(--muted); font-size: 13px; }
+.totals b { color: var(--text); }
+
+table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; background: var(--hover); }
+tr:last-child td { border-bottom: 0; }
+td.actions { white-space: nowrap; text-align: right; }
+td.actions button { margin-left: 4px; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.pill { display: inline-block; padding: 0 8px; border-radius: 999px; font-size: 12px; background: var(--code); }
+.pill.ok { background: var(--ok-bg); color: var(--ok); }
+.pill.warn { background: var(--warn-bg); color: var(--warn); }
+
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.kpi { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 8px; padding: 10px 12px; }
+.kpi small { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+.kpi b { font-size: 18px; font-variant-numeric: tabular-nums; }
+.summary { overflow-x: auto; }
+.summary table { min-width: 860px; font-size: 13px; }
+.summary tr.section td { background: var(--hover); font-weight: 700; }
+.summary tr.subtotal td { font-weight: 600; }
+.summary tr.subtotal.usd td { color: var(--accent); }
+.summary tr.grand td { background: var(--text); color: var(--bg); font-weight: 700; }
+.summary td.neg { color: var(--bad); }
+.summary .rate { color: var(--muted); font-weight: 400; font-size: 12px; }
+.pill.bad { background: var(--bad-bg); color: var(--bad); }
+.empty { padding: 30px; text-align: center; color: var(--muted); }
+.pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 10px; color: var(--muted); }
+
+aside .loghead { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); }
+aside .loghead b { font-size: 13px; }
+.log { padding: 4px 0; }
+.log details { border-bottom: 1px solid var(--line); padding: 6px 12px; }
+.log summary { cursor: pointer; display: flex; gap: 6px; align-items: baseline; list-style: none; }
+.log summary::-webkit-details-marker { display: none; }
+.log .m { font-weight: 700; font-size: 11px; width: 46px; }
+.log .u { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.log .t { color: var(--muted); font-size: 11px; }
+.log h4 { margin: 8px 0 0; font-size: 11px; color: var(--muted); text-transform: uppercase; }
+
+dialog { border: 1px solid var(--line); border-radius: 10px; padding: 0; background: var(--panel); color: var(--text); width: min(620px, calc(100vw - 32px)); max-height: calc(100vh - 40px); }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+dialog .dh { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+dialog .dh h3 { margin: 0; font-size: 16px; }
+dialog .db { padding: 14px 16px; overflow: auto; max-height: calc(100vh - 170px); }
+dialog .df { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); }
+.field { margin-bottom: 12px; }
+.field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+.field label .req { color: var(--bad); }
+.field .hint { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.field .err { font-size: 12px; color: var(--bad); margin-top: 3px; }
+.field.check label { display: flex; gap: 8px; align-items: center; color: var(--text); font-size: 14px; }
+.field.check input { width: auto; }
+.banner { padding: 8px 10px; border-radius: 6px; margin-bottom: 12px; background: var(--code); color: var(--muted); }
+.banner.bad { background: var(--bad-bg); color: var(--bad); }
+
+#toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; z-index: 10; }
+#toast div { padding: 8px 14px; border-radius: 6px; background: var(--text); color: var(--bg); box-shadow: 0 4px 16px rgba(0,0,0,.2); max-width: 560px; }
+#toast div.bad { background: var(--bad); color: #fff; }
+
+.login { max-width: 380px; margin: 60px auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
+.login h2 { margin: 0 0 4px; font-size: 18px; }
+.login p { color: var(--muted); margin: 0 0 16px; }
+
+@media (max-width: 1100px) {
+  .layout { grid-template-columns: 200px minmax(0, 1fr); }
+  aside { display: none; }
+  aside.open { display: flex; position: fixed; right: 0; top: 53px; bottom: 0; width: min(420px, 100vw); z-index: 5; box-shadow: -4px 0 16px rgba(0,0,0,.15); }
+}
+@media (max-width: 720px) {
+  .layout { grid-template-columns: 1fr; height: auto; }
+  nav { border-right: 0; border-bottom: 1px solid var(--line); }
+  main { padding: 12px 16px 40px; }
+  table { display: block; overflow-x: auto; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Finance API Tester</h1>
+  <div class="base">
+    <label for="baseUrl">API</label>
+    <input id="baseUrl" spellcheck="false">
+  </div>
+  <div class="who">
+    <span id="whoName"></span>
+    <button id="logToggle" class="small">Request log</button>
+    <button id="logoutBtn" class="small" hidden>Log out</button>
+  </div>
+</header>
+
+<div class="layout">
+  <nav id="nav"></nav>
+  <main id="main"></main>
+  <aside id="aside">
+    <div class="loghead"><b>Request log</b><button class="small" id="clearLog">Clear</button></div>
+    <div class="log" id="log"></div>
+  </aside>
+</div>
+
+<dialog id="dlg">
+  <div class="dh"><h3 id="dlgTitle"></h3><button class="small" data-close>Close</button></div>
+  <div class="db" id="dlgBody"></div>
+  <div class="df" id="dlgFoot"></div>
+</dialog>
+
+<div id="toast"></div>
+
+<script>
+'use strict';
+
+/* ---------- storage (best effort; page still works without it) ---------- */
+const store = {
+  get(k, d = null) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch { return d; } },
+  set(k, v) { try { v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} },
+};
+
+const state = {
+  base: store.get('fm.base', 'http://crm-portal.test/api/v2'),
+  token: store.get('fm.token'),
+  user: JSON.parse(store.get('fm.user', 'null')),
+  current: null,
+  page: 1,
+  perPage: 15,
+  filters: {},
+  refCache: {},
+};
+
+/* ---------- resource definitions ---------- */
+const yesNo = [{ value: '1', label: 'Active' }, { value: '0', label: 'Inactive' }];
+const active = r => r.is_active ? pill('active', 'ok') : pill('inactive');
+
+const refLabel = {
+  companies: r => r.name + (r.short_code ? ` (${r.short_code})` : ''),
+  banks: r => r.name,
+  currencies: r => `${r.code} — ${r.title}`,
+  'bank-accounts': r => `${r.title} (${r.account_number})`,
+  'chart-account-groups': r => r.name,
+  'chart-accounts': r => `${r.acc_code} — ${r.name}`,
+  'report-categories': r => r.name,
+  reports: r => `#${r.id} ${r.report_type}${r.bank_account ? ' · ' + r.bank_account.title : ''}`,
+};
+
+const RESOURCES = [
+  { group: 'Setup', key: 'currencies', label: 'Currencies',
+    fields: [
+      { name: 'title', required: true },
+      { name: 'code', required: true, hint: 'Saved in upper case. Unique, even across deleted currencies.' },
+      { name: 'symbol' },
+    ],
+    filters: [{ name: 'search' }],
+    columns: [
+      ['Code', r => r.code], ['Title', r => r.title], ['Symbol', r => r.symbol],
+      ['Latest rate → USD', r => r.latest_exchange_rate ? `${r.latest_exchange_rate.rate_to_usd} (${r.latest_exchange_rate.effective_date})` : '—'],
+    ] },
+  { group: 'Setup', key: 'exchange-rates', label: 'Exchange Rates',
+    fields: [
+      { name: 'currency_id', label: 'Currency', type: 'ref', ref: 'currencies', required: true },
+      { name: 'rate_to_usd', label: 'Rate to USD', type: 'number', step: 'any', required: true, hint: 'e.g. PKR → USD is about 0.0035778175' },
+      { name: 'effective_date', type: 'date', required: true },
+    ],
+    filters: [{ name: 'currency_id', label: 'Currency', type: 'ref', ref: 'currencies' }, { name: 'from_date', type: 'date' }, { name: 'to_date', type: 'date' }],
+    columns: [['Currency', r => r.currency?.code], ['Rate to USD', r => r.rate_to_usd, 'num'], ['Effective', r => r.effective_date]] },
+  { group: 'Setup', key: 'companies', label: 'Companies',
+    fields: [
+      { name: 'name', required: true }, { name: 'short_code' }, { name: 'note', type: 'textarea' },
+      { name: 'is_active', label: 'Active', type: 'bool', default: true },
+      { name: 'bank_account_ids', label: 'Bank accounts', type: 'multiref', ref: 'bank-accounts', from: 'bank_accounts', hint: 'Replaces the current links when saved.' },
+    ],
+    filters: [{ name: 'search' }, { name: 'is_active', label: 'Status', type: 'select', options: yesNo }],
+    columns: [['Name', r => r.name], ['Code', r => r.short_code], ['Bank accounts', r => r.bank_accounts_count, 'num'], ['Status', active]] },
+  { group: 'Setup', key: 'banks', label: 'Banks',
+    fields: [{ name: 'name', required: true }, { name: 'short_code' }, { name: 'is_active', label: 'Active', type: 'bool', default: true }],
+    filters: [{ name: 'search' }, { name: 'is_active', label: 'Status', type: 'select', options: yesNo }],
+    columns: [['Name', r => r.name], ['Code', r => r.short_code], ['Accounts', r => r.bank_accounts_count, 'num'], ['Status', active]] },
+  { group: 'Setup', key: 'bank-accounts', label: 'Bank Accounts',
+    fields: [
+      { name: 'bank_id', label: 'Bank', type: 'ref', ref: 'banks', required: true },
+      { name: 'title', required: true }, { name: 'account_number', required: true },
+      { name: 'opening_date', type: 'date', hint: 'Entries cannot be dated before this.' },
+      { name: 'opening_balance', type: 'number', step: '0.01' },
+      { name: 'region' }, { name: 'note', type: 'textarea' },
+      { name: 'is_active', label: 'Active', type: 'bool', default: true },
+      { name: 'currency_ids', label: 'Currencies', type: 'multiref', ref: 'currencies', from: 'currencies', hint: 'Transactions can only use these currencies.' },
+      { name: 'company_ids', label: 'Companies', type: 'multiref', ref: 'companies', from: 'companies' },
+    ],
+    filters: [
+      { name: 'search' }, { name: 'bank_id', label: 'Bank', type: 'ref', ref: 'banks' },
+      { name: 'company_id', label: 'Company', type: 'ref', ref: 'companies' },
+      { name: 'currency_id', label: 'Currency', type: 'ref', ref: 'currencies' },
+      { name: 'is_active', label: 'Status', type: 'select', options: yesNo },
+    ],
+    columns: [
+      ['Title', r => r.title], ['Number', r => r.account_number], ['Bank', r => r.bank?.name],
+      ['Currencies', r => (r.currencies || []).map(c => c.code).join(', ')],
+      ['Companies', r => (r.companies || []).map(c => c.name).join(', ')],
+      ['Opening', r => `${r.opening_balance ?? ''} ${r.opening_date ? '@ ' + r.opening_date : ''}`],
+      ['Status', active],
+    ] },
+  { group: 'Setup', key: 'bank-account-currencies', label: 'Bank Account ↔ Currency',
+    fields: [
+      { name: 'bank_account_id', label: 'Bank account', type: 'ref', ref: 'bank-accounts', required: true },
+      { name: 'currency_id', label: 'Currency', type: 'ref', ref: 'currencies', required: true },
+    ],
+    filters: [{ name: 'bank_account_id', label: 'Bank account', type: 'ref', ref: 'bank-accounts' }, { name: 'currency_id', label: 'Currency', type: 'ref', ref: 'currencies' }],
+    columns: [['Bank account', r => r.bank_account?.title], ['Bank', r => r.bank_account?.bank?.name], ['Currency', r => r.currency?.code]] },
+  { group: 'Setup', key: 'company-bank-accounts', label: 'Company ↔ Bank Account',
+    fields: [
+      { name: 'company_id', label: 'Company', type: 'ref', ref: 'companies', required: true },
+      { name: 'bank_account_id', label: 'Bank account', type: 'ref', ref: 'bank-accounts', required: true },
+    ],
+    filters: [{ name: 'company_id', label: 'Company', type: 'ref', ref: 'companies' }, { name: 'bank_account_id', label: 'Bank account', type: 'ref', ref: 'bank-accounts' }],
+    columns: [['Company', r => r.company?.name], ['Bank account', r => r.bank_account?.title], ['Bank', r => r.bank_account?.bank?.name]] },
+  { group: 'Chart of accounts', key: 'chart-account-groups', label: 'Account Groups',
+    fields: [{ name: 'name', required: true }, { name: 'recon_label' }, { name: 'is_active', label: 'Active', type: 'bool', default: true }],
+    filters: [{ name: 'search' }, { name: 'is_active', label: 'Status', type: 'select', options: yesNo }],
+    columns: [['Name', r => r.name], ['Recon label', r => r.recon_label], ['Accounts', r => r.chart_accounts_count, 'num'], ['Status', active]] },
+  { group: 'Chart of accounts', key: 'chart-accounts', label: 'Chart Accounts',
+    fields: [
+      { name: 'name', required: true },
+      { name: 'chart_account_group_id', label: 'Group', type: 'ref', ref: 'chart-account-groups', required: true },
+      { name: 'type_code', required: true, hint: 'Free text for now, e.g. income, expense, asset.' },
+      { name: 'acc_code', label: 'Account code', required: true },
+      { name: 'is_active', label: 'Active', type: 'bool', default: true },
+    ],
+    filters: [{ name: 'search' }, { name: 'chart_account_group_id', label: 'Group', type: 'ref', ref: 'chart-account-groups' }, { name: 'type_code' }, { name: 'is_active', label: 'Status', type: 'select', options: yesNo }],
+    columns: [['Code', r => r.acc_code], ['Name', r => r.name], ['Group', r => r.group?.name], ['Type', r => r.type_code], ['Status', active]] },
+  { group: 'Books', key: 'transactions', label: 'Transactions',
+    editWhen: r => r.status === 'draft', deleteWhen: r => r.status === 'draft',
+    fields: [
+      { name: 'bank_account_id', label: 'Bank account', type: 'ref', ref: 'bank-accounts', required: true, createOnly: true, hint: 'Fixed once saved: the entry joins this account’s batch for the current business day.' },
+      { name: 'chart_account_id', label: 'Chart account', type: 'ref', ref: 'chart-accounts', required: true },
+      { name: 'currency_id', label: 'Currency', type: 'ref', ref: 'currencies', required: true, hint: 'Must be linked to the bank account.' },
+      { name: 'transaction_date', type: 'date', required: true, default: () => today() },
+      { name: 'type', type: 'select', options: [{ value: 'credit', label: 'Credit (money in)' }, { value: 'debit', label: 'Debit (money out)' }], required: true },
+      { name: 'amount', type: 'number', step: '0.01', required: true },
+      { name: 'description', type: 'textarea' }, { name: 'reference' },
+    ],
+    filters: [
+      { name: 'search' }, { name: 'bank_account_id', label: 'Bank account', type: 'ref', ref: 'bank-accounts' },
+      { name: 'company_id', label: 'Company', type: 'ref', ref: 'companies' },
+      { name: 'chart_account_id', label: 'Chart account', type: 'ref', ref: 'chart-accounts' },
+      { name: 'status', type: 'select', options: [{ value: 'draft', label: 'Draft' }, { value: 'posted', label: 'Posted' }] },
+      { name: 'type', type: 'select', options: [{ value: 'credit', label: 'Credit' }, { value: 'debit', label: 'Debit' }] },
+      { name: 'from_date', type: 'date' }, { name: 'to_date', type: 'date' },
+      { name: 'posting_batch_id', label: 'Batch ID' },
+    ],
+    withTotals: true,
+    columns: [
+      ['Date', r => r.transaction_date], ['Bank account', r => r.bank_account?.title],
+      ['Chart account', r => r.chart_account ? `${r.chart_account.acc_code} ${r.chart_account.name}` : ''],
+      ['Type', r => pill(r.type, r.type === 'credit' ? 'ok' : 'warn')],
+      ['Amount', r => `${r.amount} ${r.currency?.code ?? ''}`, 'num'],
+      ['Status', r => pill(r.status, r.status === 'posted' ? 'ok' : '')],
+      ['Batch', r => r.posting_batch ? `#${r.posting_batch.id} · ${r.posting_batch.batch_date}` : ''],
+      ['Approved by', r => r.approved_by?.name],
+      ['Description', r => r.description],
+    ],
+    extraActions: [
+      { label: 'Post', when: r => r.status === 'draft', run: r => postTransaction(r) },
+      { label: 'Reverse', when: r => r.status === 'posted', run: r => reverseTransaction(r) },
+    ] },
+  { group: 'Books', key: 'posting-batches', label: 'Posting Batches', readOnly: true,
+    note: 'Batches are opened automatically: the first transaction of a business day creates one per bank account. A business day runs 10:00 AM to 10:00 AM PKT; at 10:00 AM the batch closes and the next one starts.',
+    fields: [],
+    filters: [
+      { name: 'bank_account_id', label: 'Bank account', type: 'ref', ref: 'bank-accounts' },
+      { name: 'state', type: 'select', options: [{ value: 'open', label: 'Open' }, { value: 'closed', label: 'Closed' }] },
+      { name: 'from_date', type: 'date' }, { name: 'to_date', type: 'date' },
+    ],
+    columns: [
+      ['Business day', r => r.batch_date], ['Bank account', r => r.bank_account?.title],
+      ['Entries', r => r.transaction_count, 'num'],
+      ['Window (PKT)', r => `${pkt(r.opens_at)} → ${pkt(r.closes_at)}`],
+      ['State', r => pill(r.is_closed ? 'closed' : 'open', r.is_closed ? '' : 'ok')],
+    ],
+    extraActions: [{ label: 'Entries', run: r => showBatchEntries(r) }] },
+  { group: 'Reports', key: 'report-categories', label: 'Report Categories',
+    fields: [{ name: 'name', required: true }, { name: 'is_active', label: 'Active', type: 'bool', default: true }],
+    filters: [{ name: 'search' }, { name: 'is_active', label: 'Status', type: 'select', options: yesNo }],
+    columns: [['Name', r => r.name], ['Reports', r => r.reports_count, 'num'], ['Status', active]] },
+  { group: 'Reports', key: 'reports', label: 'Reports',
+    fields: [
+      { name: 'bank_account_id', label: 'Bank account', type: 'ref', ref: 'bank-accounts', required: true },
+      { name: 'report_type', required: true, hint: 'Free text for now, e.g. daily_summary.' },
+      { name: 'sort_order', type: 'number', step: '1' }, { name: 'remarks', type: 'textarea' },
+      { name: 'is_active', label: 'Active', type: 'bool', default: true },
+      { name: 'category_ids', label: 'Categories', type: 'multiref', ref: 'report-categories', from: 'categories' },
+    ],
+    filters: [{ name: 'search' }, { name: 'bank_account_id', label: 'Bank account', type: 'ref', ref: 'bank-accounts' }, { name: 'category_id', label: 'Category', type: 'ref', ref: 'report-categories' }, { name: 'report_type' }],
+    columns: [['#', r => r.sort_order, 'num'], ['Type', r => r.report_type], ['Bank account', r => r.bank_account?.title], ['Categories', r => (r.categories || []).map(c => c.name).join(', ')], ['Status', active]] },
+  { group: 'Reports', key: 'daily-bank-summary', label: 'Daily Bank Summary', view: () => renderDailySummary() },
+  { group: 'Reports', key: 'report-bank-categories', label: 'Report ↔ Category',
+    fields: [
+      { name: 'report_id', label: 'Report', type: 'ref', ref: 'reports', required: true },
+      { name: 'category_id', label: 'Category', type: 'ref', ref: 'report-categories', required: true },
+    ],
+    filters: [{ name: 'report_id', label: 'Report', type: 'ref', ref: 'reports' }, { name: 'category_id', label: 'Category', type: 'ref', ref: 'report-categories' }],
+    columns: [['Report', r => r.report ? `#${r.report.id} ${r.report.report_type}` : ''], ['Bank account', r => r.report?.bank_account?.title], ['Category', r => r.category?.name]] },
+];
+
+/* ---------- helpers ---------- */
+const $ = s => document.querySelector(s);
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const pill = (text, kind = '') => ({ html: `<span class="pill ${kind}">${esc(text)}</span>` });
+const labelOf = f => f.label || f.name.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
+const pad = n => String(n).padStart(2, '0');
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+const cell = v => (v && typeof v === 'object' && 'html' in v) ? v.html : esc(v === null || v === undefined || v === '' ? '—' : v);
+
+function toast(msg, bad = false) {
+  const el = document.createElement('div');
+  el.textContent = msg;
+  if (bad) el.className = 'bad';
+  $('#toast').appendChild(el);
+  setTimeout(() => el.remove(), bad ? 6000 : 3000);
+}
+
+/* ---------- API + request log ---------- */
+async function api(method, path, { body, query } = {}) {
+  const qs = query ? '?' + new URLSearchParams(Object.entries(query).filter(([, v]) => v !== '' && v !== null && v !== undefined)).toString() : '';
+  const url = state.base.replace(/\/+$/, '') + path + (qs === '?' ? '' : qs);
+  const headers = { Accept: 'application/json' };
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (state.token) headers.Authorization = 'Bearer ' + state.token;
+
+  const started = performance.now();
+  let status = 0, json = null, text = '';
+  try {
+    const res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    status = res.status;
+    text = await res.text();
+    try { json = JSON.parse(text); } catch { json = null; }
+  } catch (e) {
+    text = 'Network error: ' + e.message + '\n\nIs the API URL right, and is Herd running?';
+  }
+  logRequest({ method, url, status, ms: Math.round(performance.now() - started), body, response: json ?? text });
+
+  if (status === 401 && path !== '/login') {
+    setSession(null, null);
+    toast('Session expired or not logged in. Please log in again.', true);
+    render();
+  }
+  if (status === 429) toast('Rate limit hit (60 requests/minute). Wait a moment and try again.', true);
+  return { status, json, text };
+}
+
+function logRequest(e) {
+  const kind = e.status >= 200 && e.status < 300 ? 'ok' : e.status === 422 ? 'warn' : 'bad';
+  const d = document.createElement('details');
+  const time = new Date().toLocaleTimeString();
+  const short = e.url.replace(state.base.replace(/\/+$/, ''), '');
+  d.innerHTML = `<summary><span class="m">${esc(e.method)}</span><span class="u" title="${esc(e.url)}">${esc(short)}</span>`
+    + `<span class="pill ${kind}">${e.status || 'ERR'}</span><span class="t">${e.ms}ms · ${time}</span></summary>`
+    + (e.body !== undefined ? `<h4>Request body</h4><pre>${esc(JSON.stringify(e.body, null, 2))}</pre>` : '')
+    + `<h4>Response</h4><pre>${esc(typeof e.response === 'string' ? e.response : JSON.stringify(e.response, null, 2))}</pre>`;
+  $('#log').prepend(d);
+  while ($('#log').children.length > 60) $('#log').lastChild.remove();
+}
+
+function apiError(res) {
+  if (res.json?.message) return res.json.message + (res.json.error ? ` (${res.json.error})` : '');
+  return `Request failed (${res.status || 'network error'})`;
+}
+
+/* ---------- session ---------- */
+function setSession(token, user) {
+  state.token = token;
+  state.user = user;
+  store.set('fm.token', token);
+  store.set('fm.user', user ? JSON.stringify(user) : null);
+  state.refCache = {};
+  renderWho();
+}
+
+function renderWho() {
+  $('#whoName').textContent = state.user ? `${state.user.name} · ${fmPermissionCount()} fm permissions${isSuperadmin() ? ' (superadmin)' : ''}` : '';
+  $('#logoutBtn').hidden = !state.token;
+}
+const isSuperadmin = () => (state.user?.roles || []).includes('superadmin');
+const fmPermissionCount = () => (state.user?.permissions || []).filter(p => p.startsWith('fm.')).length;
+
+function renderLogin() {
+  $('#nav').innerHTML = '';
+  $('#main').innerHTML = `
+    <form class="login" id="loginForm">
+      <h2>Log in</h2>
+      <p>Uses <code>POST /login</code> on the CRM API. The password is not stored; the token is kept in this browser.</p>
+      <div class="field"><label>Email</label><input name="email" type="email" required autocomplete="username"></div>
+      <div class="field"><label>Password</label><input name="password" type="password" required autocomplete="current-password"></div>
+      <div id="loginErr"></div>
+      <button class="primary" type="submit">Log in</button>
+    </form>`;
+  $('#loginForm').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const fd = new FormData(ev.target);
+    const res = await api('POST', '/login', { body: { email: fd.get('email'), password: fd.get('password'), remember: true } });
+    if (res.status === 200 && res.json?.token) {
+      setSession(res.json.token, res.json.user);
+      toast('Logged in');
+      render();
+    } else {
+      $('#loginErr').innerHTML = `<div class="banner bad">${esc(apiError(res))}${res.json?.errors ? '<br>' + esc(Object.values(res.json.errors).flat().join(' ')) : ''}</div>`;
+    }
+  });
+}
+
+/* ---------- navigation ---------- */
+function renderNav() {
+  let html = '', group = '';
+  for (const r of RESOURCES) {
+    if (r.group !== group) { group = r.group; html += `<h3>${esc(group)}</h3>`; }
+    html += `<a href="#${r.key}" class="${state.current?.key === r.key ? 'active' : ''}">${esc(r.label)}</a>`;
+  }
+  $('#nav').innerHTML = html;
+}
+
+function render() {
+  renderWho();
+  if (!state.token) return renderLogin();
+  const key = location.hash.slice(1) || RESOURCES[0].key;
+  const res = RESOURCES.find(r => r.key === key) || RESOURCES[0];
+  if (state.current?.key !== res.key) { state.page = 1; state.filters = {}; }
+  state.current = res;
+  renderNav();
+  res.view ? res.view() : renderList();
+}
+
+/* ---------- daily bank summary ---------- */
+// 1234.5 -> "1,234.50", -391 -> "(391.00)", 0 -> "-" (accounting style, as on the sheet)
+function money(v) {
+  if (v === null || v === undefined) return 'n/a';
+  if (Math.abs(v) < 0.005) return '-';
+  const s = Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return v < 0 ? `(${s})` : s;
+}
+const moneyTd = v => `<td class="num${v < 0 ? ' neg' : ''}">${esc(money(v))}</td>`;
+const niceDate = d => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '';
+
+async function renderDailySummary() {
+  const date = state.filters.report_date || today();
+  const type = state.filters.report_type || '';
+  $('#main').innerHTML = `
+    <div class="titlebar">
+      <div><h2>Daily Bank Summary</h2><div class="endpoint">GET <code>/finance/daily-bank-summary</code> · from view <code>fm_daily_bank_summary_view</code></div></div>
+    </div>
+    <form class="filters" id="dsForm">
+      <div class="f"><label>Report date</label><input type="date" name="report_date" value="${esc(date)}"></div>
+      <div class="f"><label>Report type</label><input name="report_type" value="${esc(type)}" placeholder="All types"></div>
+      <div class="f" style="flex:0 0 auto;min-width:0"><label>&nbsp;</label><div style="display:flex;gap:6px"><button class="primary" type="submit">Run</button><button type="button" id="dsToday">Today</button></div></div>
+    </form>
+    <div id="dsBody"><div class="empty">Loading…</div></div>`;
+  $('#dsForm').onsubmit = ev => { ev.preventDefault(); state.filters = Object.fromEntries(new FormData(ev.target).entries()); renderDailySummary(); };
+  $('#dsToday').onclick = () => { state.filters = {}; renderDailySummary(); };
+
+  const query = { report_date: date };
+  if (type) query.report_type = type;
+  const res = await api('GET', '/finance/daily-bank-summary', { query });
+  if (state.current?.key !== 'daily-bank-summary') return;
+  if (res.status !== 200) {
+    $('#dsBody').innerHTML = `<div class="banner bad">${esc(apiError(res))}${res.status === 403 ? ' — your user is missing the fm.daily-bank-summary.index permission.' : ''}</div>`;
+    return;
+  }
+  const d = res.json.data;
+  const base = d.base_currency;
+  const g = d.grand_total;
+  const w = d.warnings || {};
+
+  let warn = '';
+  if (w.missing_rates) warn += `<div class="banner bad">No exchange rate on or before this date for: <b>${esc(w.missing_rates.join(', '))}</b>. Those lines are left out of the ${esc(base)} totals.</div>`;
+  if (w.draft_count) warn += `<div class="banner">${w.draft_count} draft entr${w.draft_count === 1 ? 'y' : 'ies'} on this date ${w.draft_count === 1 ? 'is' : 'are'} included but not posted yet.</div>`;
+  if (w.unclassified_report_ids) warn += `<div class="banner">Report lines with no category (shown under Unclassified): #${w.unclassified_report_ids.join(', #')}</div>`;
+  if (w.multiple_category_report_ids) warn += `<div class="banner">Report lines linked to more than one category, shown only under the first: #${w.multiple_category_report_ids.join(', #')}</div>`;
+
+  let body = '';
+  for (const s of d.sections) {
+    body += `<tr class="section"><td colspan="8">${esc(s.label)}</td></tr>`;
+    for (const r of s.rows) {
+      const acct = `${r.bank}${r.account_title ? ' · ' + r.account_title : ''}${r.account_last4 ? ` (••••${r.account_last4})` : ''}`;
+      body += `<tr><td>${esc(r.region || '—')}</td><td>${esc(r.company || '—')}</td><td>${esc(acct)}${r.draft_count ? ` ${pill(r.draft_count + ' draft', 'warn').html}` : ''}</td><td>${esc(r.currency)}</td>
+        ${moneyTd(r.last_balance)}${moneyTd(r.today_balance)}${moneyTd(r.change)}<td class="endpoint">${esc(r.remarks || '')}</td></tr>`;
+    }
+    for (const t of s.currency_totals) {
+      body += `<tr class="subtotal"><td colspan="4" class="num">${esc(s.label)} total (${esc(t.currency)})</td>${moneyTd(t.last)}${moneyTd(t.today)}${moneyTd(t.change)}<td></td></tr>`;
+      if (t.is_converted) {
+        const rate = d.rates[t.currency];
+        const note = rate ? `@ ${rate.rate}${rate.effective_date ? ' · rate effective ' + niceDate(rate.effective_date) : ''}` : 'no rate';
+        body += `<tr class="subtotal usd"><td colspan="4" class="num">${esc(s.label)} total (${esc(base)}) <span class="rate">${esc(note)}</span></td>${moneyTd(t.last_usd)}${moneyTd(t.today_usd)}${moneyTd(t.change_usd)}<td></td></tr>`;
+      }
+    }
+  }
+  if (!d.sections.length) body = `<tr><td colspan="8"><div class="empty">No active report lines. Add Reports (with a category) for your bank accounts first.</div></td></tr>`;
+
+  $('#dsBody').innerHTML = `
+    <p class="endpoint">Balances as at <b>${esc(niceDate(d.report_date))}</b>, compared with <b>${esc(niceDate(d.previous_date))}</b>.</p>
+    ${warn}
+    <div class="kpis">
+      <div class="kpi"><small>Last day total</small><b>${esc(base)} ${esc(money(g.last))}</b></div>
+      <div class="kpi"><small>Today total</small><b>${esc(base)} ${esc(money(g.today))}</b></div>
+      <div class="kpi" style="border-left-color:var(--ok)"><small>Increase / (Decrease)</small><b>${esc(base)} ${esc(money(g.change))}</b></div>
+    </div>
+    <div class="summary"><table>
+      <thead><tr><th>Region</th><th>Company</th><th>Bank / Wallet</th><th>Ccy</th><th class="num">Last day balance</th><th class="num">Today balance</th><th class="num">Increase / (Decrease)</th><th>Remarks</th></tr></thead>
+      <tbody>${body}</tbody>
+      <tfoot><tr class="grand"><td colspan="4" class="num">GRAND TOTAL (${esc(base)})${d.is_complete ? '' : ' — incomplete'}</td>${moneyTd(g.last).replace(' neg', '')}${moneyTd(g.today).replace(' neg', '')}${moneyTd(g.change).replace(' neg', '')}<td></td></tr></tfoot>
+    </table></div>
+    <p class="endpoint">Both balance columns use the rate in force on the report date, so the change column shows bank movement only, never currency movement.</p>`;
+}
+
+/* ---------- reference dropdowns ---------- */
+async function loadRef(key) {
+  if (state.refCache[key]) return state.refCache[key];
+  const res = await api('GET', `/finance/${key}`, { query: { per_page: 500 } });
+  state.refCache[key] = res.status === 200 ? res.json.data : [];
+  return state.refCache[key];
+}
+
+function optionsHtml(rows, key, selected, multiple = false) {
+  const sel = new Set([].concat(selected ?? []).map(String));
+  return (multiple ? '' : '<option value="">—</option>') + rows.map(r =>
+    `<option value="${r.id}" ${sel.has(String(r.id)) ? 'selected' : ''}>${esc(refLabel[key] ? refLabel[key](r) : '#' + r.id)}</option>`).join('');
+}
+
+/* ---------- list ---------- */
+async function renderList() {
+  const r = state.current;
+  const main = $('#main');
+  main.innerHTML = `
+    <div class="titlebar">
+      <div><h2>${esc(r.label)}</h2><div class="endpoint"><code>/finance/${esc(r.key)}</code></div></div>
+      <div class="grow"></div>
+      <button id="refresh">Refresh</button>
+      ${r.readOnly ? '' : `<button class="primary" id="newBtn">${esc(r.createLabel || 'New')}</button>`}
+    </div>
+    ${r.note ? `<div class="banner">${esc(r.note)}</div>` : ''}
+    <form class="filters" id="filters"></form>
+    <div class="totals" id="totals"></div>
+    <div id="table"><div class="empty">Loading…</div></div>
+    <div class="pager" id="pager"></div>`;
+  if (!r.readOnly) $('#newBtn').onclick = () => openForm(r, null);
+  $('#refresh').onclick = () => loadList();
+  await renderFilters(r);
+  loadList();
+}
+
+async function renderFilters(r) {
+  const form = $('#filters');
+  let html = '';
+  for (const f of r.filters || []) {
+    const v = state.filters[f.name] ?? '';
+    let input;
+    if (f.type === 'ref') input = `<select name="${f.name}"><option value="">Any</option>${optionsHtml(await loadRef(f.ref), f.ref, v).replace('<option value="">—</option>', '')}</select>`;
+    else if (f.type === 'select') input = `<select name="${f.name}"><option value="">Any</option>${f.options.map(o => `<option value="${esc(o.value)}" ${String(v) === o.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`;
+    else input = `<input name="${f.name}" type="${f.type || 'text'}" value="${esc(v)}" ${f.name === 'search' ? 'placeholder="Search…"' : ''}>`;
+    html += `<div class="f"><label>${esc(labelOf(f))}</label>${input}</div>`;
+  }
+  html += `<div class="f" style="flex:0 0 auto;min-width:0"><label>&nbsp;</label><div style="display:flex;gap:6px"><button class="primary" type="submit">Apply</button><button type="button" id="resetF">Reset</button></div></div>`;
+  form.innerHTML = html;
+  form.onsubmit = ev => {
+    ev.preventDefault();
+    state.filters = Object.fromEntries(new FormData(form).entries());
+    state.page = 1;
+    loadList();
+  };
+  $('#resetF').onclick = () => { state.filters = {}; state.page = 1; renderFilters(r); loadList(); };
+}
+
+async function loadList() {
+  const r = state.current;
+  const query = { ...state.filters, page: state.page, per_page: state.perPage };
+  if (r.withTotals) query.with_totals = 1;
+  const res = await api('GET', `/finance/${r.key}`, { query });
+  if (state.current !== r) return;
+  if (res.status !== 200) {
+    $('#table').innerHTML = `<div class="banner bad">${esc(apiError(res))}${res.status === 403 ? ' — your user is missing the fm.' + esc(r.key) + '.index permission.' : ''}</div>`;
+    $('#pager').innerHTML = '';
+    return;
+  }
+  const rows = res.json.data || [];
+  const meta = res.json.meta || {};
+  const totals = res.json.totals || {};
+
+  $('#totals').innerHTML = r.withTotals && Object.keys(totals).length
+    ? `<span>Entries <b>${totals.total_transactions}</b></span><span>Credit <b>${totals.total_credit}</b></span><span>Debit <b>${totals.total_debit}</b></span><span>Net <b>${(totals.total_credit - totals.total_debit).toFixed(2)}</b></span><span>Draft <b>${totals.draft_count}</b></span><span>Posted <b>${totals.posted_count}</b></span>`
+    : '';
+
+  if (!rows.length) {
+    $('#table').innerHTML = `<div class="empty">${r.readOnly ? 'Nothing here yet.' : `Nothing here yet. Use “${esc(r.createLabel || 'New')}” to add one.`}</div>`;
+  } else {
+    $('#table').innerHTML = `<table><thead><tr><th>ID</th>${r.columns.map(c => `<th class="${c[2] || ''}">${esc(c[0])}</th>`).join('')}<th></th></tr></thead><tbody>${
+      rows.map((row, i) => `<tr><td>${row.id}</td>${r.columns.map(c => `<td class="${c[2] || ''}">${cell(c[1](row))}</td>`).join('')}<td class="actions">${
+        (r.extraActions || []).filter(a => !a.when || a.when(row)).map((a, j) => `<button class="small" data-x="${j}" data-i="${i}">${esc(a.label)}</button>`).join('')
+      }<button class="small" data-view="${i}">View</button>${
+        r.readOnly || (r.editWhen && !r.editWhen(row)) ? '' : `<button class="small" data-edit="${i}">Edit</button>`}${
+        r.readOnly || (r.deleteWhen && !r.deleteWhen(row)) ? '' : `<button class="small danger" data-del="${i}">Delete</button>`}</td></tr>`).join('')
+    }</tbody></table>`;
+    $('#table').onclick = ev => {
+      const b = ev.target.closest('button');
+      if (!b) return;
+      if (b.dataset.view !== undefined) viewRecord(r, rows[b.dataset.view]);
+      if (b.dataset.edit !== undefined) openForm(r, rows[b.dataset.edit]);
+      if (b.dataset.del !== undefined) deleteRecord(r, rows[b.dataset.del]);
+      if (b.dataset.x !== undefined) r.extraActions.filter(a => !a.when || a.when(rows[b.dataset.i]))[b.dataset.x].run(rows[b.dataset.i]);
+    };
+  }
+
+  $('#pager').innerHTML = `<span>${meta.total ?? 0} total · page ${meta.current_page ?? 1} of ${meta.last_page ?? 1}</span>
+    <button class="small" id="prev" ${(meta.current_page ?? 1) <= 1 ? 'disabled' : ''}>Prev</button>
+    <button class="small" id="next" ${(meta.current_page ?? 1) >= (meta.last_page ?? 1) ? 'disabled' : ''}>Next</button>`;
+  $('#prev').onclick = () => { state.page--; loadList(); };
+  $('#next').onclick = () => { state.page++; loadList(); };
+}
+
+/* ---------- dialog ---------- */
+function openDialog(title, bodyHtml, footHtml) {
+  $('#dlgTitle').textContent = title;
+  $('#dlgBody').innerHTML = bodyHtml;
+  $('#dlgFoot').innerHTML = footHtml;
+  $('#dlg').showModal();
+}
+$('#dlg').addEventListener('click', ev => {
+  if (ev.target.closest('[data-close]') || ev.target === $('#dlg')) $('#dlg').close();
+});
+
+async function viewRecord(r, row) {
+  const res = await api('GET', `/finance/${r.key}/${row.id}/show`);
+  openDialog(`${r.label} #${row.id}`, res.status === 200
+    ? `<pre style="max-height:none">${esc(JSON.stringify(res.json.data, null, 2))}</pre>`
+    : `<div class="banner bad">${esc(apiError(res))}</div>`, '<button data-close>Close</button>');
+}
+
+async function openForm(r, row) {
+  const editing = !!row;
+  let record = {};
+  if (editing) {
+    const res = await api('GET', `/finance/${r.key}/${row.id}/show`);
+    if (res.status !== 200) return toast(apiError(res), true);
+    record = res.json.data;
+  }
+  const fields = r.fields.filter(f => !(editing && f.createOnly));
+
+  let html = '<div id="formErr"></div>';
+  for (const f of fields) {
+    let value;
+    if (editing) value = f.type === 'multiref' ? (record[f.from] || []).map(x => x.id) : record[f.name];
+    else value = typeof f.default === 'function' ? f.default() : f.default;
+    const req = f.required ? ' <span class="req">*</span>' : '';
+    let input;
+    switch (f.type) {
+      case 'textarea': input = `<textarea name="${f.name}">${esc(value)}</textarea>`; break;
+      case 'bool': input = null; break;
+      case 'select': input = `<select name="${f.name}"><option value="">—</option>${f.options.map(o => `<option value="${esc(o.value)}" ${String(value) === o.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`; break;
+      case 'ref': input = `<select name="${f.name}">${optionsHtml(await loadRef(f.ref), f.ref, value)}</select>`; break;
+      case 'multiref': input = `<select name="${f.name}" multiple>${optionsHtml(await loadRef(f.ref), f.ref, value, true)}</select>`; break;
+      case 'date': input = `<input name="${f.name}" type="date" value="${esc(String(value ?? '').slice(0, 10))}">`; break;
+      case 'number': input = `<input name="${f.name}" type="number" step="${f.step || 'any'}" value="${esc(value)}">`; break;
+      default: input = `<input name="${f.name}" value="${esc(value)}">`;
+    }
+    html += f.type === 'bool'
+      ? `<div class="field check" data-field="${f.name}"><label><input type="checkbox" name="${f.name}" ${value ? 'checked' : ''}> ${esc(labelOf(f))}</label></div>`
+      : `<div class="field" data-field="${f.name}"><label>${esc(labelOf(f))}${req}</label>${input}${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ''}${f.type === 'multiref' ? '<div class="hint">Ctrl/Cmd-click to pick several.</div>' : ''}</div>`;
+  }
+
+  const action = editing ? 'edit' : 'create';
+  const endpoint = editing ? `/finance/${r.key}/${row.id}/edit` : `/finance/${r.key}/create`;
+  openDialog(editing ? `Edit ${r.label} #${row.id}` : (r.createLabel || `New ${r.label}`),
+    `<form id="recForm">${html}</form><div class="endpoint">POST <code>${esc(endpoint)}</code></div>`,
+    `<button data-close>Cancel</button><button class="primary" id="saveBtn">${editing ? 'Save' : (r.createLabel || 'Create')}</button>`);
+
+  $('#saveBtn').onclick = async () => {
+    const form = $('#recForm');
+    const body = {};
+    for (const f of fields) {
+      const el = form.elements[f.name];
+      if (f.type === 'bool') body[f.name] = el.checked;
+      else if (f.type === 'multiref') body[f.name] = [...el.selectedOptions].map(o => Number(o.value));
+      else if (el.value === '') { if (editing) body[f.name] = null; }
+      else if (f.type === 'ref' || f.type === 'number') body[f.name] = Number(el.value);
+      else body[f.name] = el.value;
+    }
+    // Required fields are never sent as null on edit; leaving them blank sends nothing.
+    for (const f of fields) if (f.required && body[f.name] === null) delete body[f.name];
+
+    $('#saveBtn').disabled = true;
+    const res = await api('POST', endpoint, { body });
+    $('#saveBtn').disabled = false;
+    form.querySelectorAll('.err').forEach(e => e.remove());
+    if (res.status === 200 || res.status === 201) {
+      $('#dlg').close();
+      state.refCache = {};
+      toast(res.json?.message || 'Saved');
+      loadList();
+      return;
+    }
+    $('#formErr').innerHTML = `<div class="banner bad">${esc(apiError(res))}</div>`;
+    for (const [name, msgs] of Object.entries(res.json?.errors || {})) {
+      const holder = form.querySelector(`[data-field="${name.split('.')[0]}"]`);
+      if (holder) holder.insertAdjacentHTML('beforeend', `<div class="err">${esc(msgs.join(' '))}</div>`);
+    }
+  };
+}
+
+async function deleteRecord(r, row) {
+  if (!confirm(`Delete ${r.label} #${row.id}? It is soft-deleted on the server.`)) return;
+  const res = await api('DELETE', `/finance/${r.key}/${row.id}/delete`);
+  if (res.status === 200) { toast(res.json?.message || 'Deleted'); state.refCache = {}; loadList(); }
+  else toast(apiError(res), true);
+}
+
+async function postTransaction(row) {
+  openDialog(`Post transaction #${row.id}`,
+    `<p>Approves and posts this ${esc(row.type)} of ${esc(row.amount)} ${esc(row.currency?.code ?? '')}. A posted entry can no longer be edited or deleted, only reversed.</p>
+     <div class="field"><label>Review notes</label><textarea id="postNotes"></textarea></div>
+     <div class="endpoint">POST <code>/finance/transactions/${row.id}/post</code></div>
+     <div id="postErr"></div>`,
+    `<button data-close>Cancel</button><button class="primary" id="postBtn">Post</button>`);
+  $('#postBtn').onclick = async () => {
+    const res = await api('POST', `/finance/transactions/${row.id}/post`, { body: { review_notes: $('#postNotes').value || null } });
+    if (res.status === 200) { $('#dlg').close(); toast(res.json.message); loadList(); }
+    else $('#postErr').innerHTML = `<div class="banner bad">${esc(apiError(res))}</div>`;
+  };
+}
+
+function showBatchEntries(batch) {
+  state.current = RESOURCES.find(r => r.key === 'transactions');
+  state.filters = { posting_batch_id: String(batch.id) };
+  state.page = 1;
+  location.hash = 'transactions';
+}
+
+// "2026-11-25T10:00:00+05:00" -> "25 Nov 10:00"
+function pkt(iso) {
+  if (!iso) return '';
+  const [d, t] = iso.split('T');
+  const [, m, day] = d.split('-');
+  return `${Number(day)} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(m) - 1]} ${t.slice(0, 5)}`;
+}
+
+async function reverseTransaction(row) {
+  openDialog(`Reverse transaction #${row.id}`,
+    `<p>Creates the opposite entry (${row.type === 'credit' ? 'debit' : 'credit'} ${esc(row.amount)}) as a new draft in the current open batch. The original stays posted.</p>
+     <div class="field"><label>Date of the reversal</label><input type="date" id="revDate" value="${today()}"><div class="hint">Can’t be before the bank account’s opening date.</div></div>
+     <div id="revErr"></div>`,
+    `<button data-close>Cancel</button><button class="primary" id="revBtn">Reverse</button>`);
+  $('#revBtn').onclick = async () => {
+    const res = await api('POST', `/finance/transactions/${row.id}/reverse`, { body: { transaction_date: $('#revDate').value || null } });
+    if (res.status === 201) { $('#dlg').close(); toast(res.json.message); loadList(); }
+    else $('#revErr').innerHTML = `<div class="banner bad">${esc(apiError(res))}</div>`;
+  };
+}
+
+/* ---------- boot ---------- */
+$('#baseUrl').value = state.base;
+$('#baseUrl').addEventListener('change', e => { state.base = e.target.value.trim(); store.set('fm.base', state.base); state.refCache = {}; render(); });
+$('#logoutBtn').onclick = async () => { await api('POST', '/logout'); setSession(null, null); render(); };
+$('#clearLog').onclick = () => { $('#log').innerHTML = ''; };
+$('#logToggle').onclick = () => $('#aside').classList.toggle('open');
+window.addEventListener('hashchange', render);
+render();
+</script>
+</body>
+</html>
