@@ -110,6 +110,24 @@ dialog .df { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 1
 .field.check input { width: auto; }
 .banner { padding: 8px 10px; border-radius: 6px; margin-bottom: 12px; background: var(--code); color: var(--muted); }
 .banner.bad { background: var(--bad-bg); color: var(--bad); }
+.sheetwrap { overflow-x: auto; }
+.sheet { min-width: 1180px; font-size: 13px; }
+.sheet td { padding: 2px 4px; vertical-align: middle; }
+.sheet th { padding: 6px; }
+.sheet input, .sheet select { padding: 3px 5px; border-radius: 4px; border-color: transparent; background: transparent; }
+.sheet input:focus, .sheet select:focus { border-color: var(--accent); background: var(--panel); outline: none; }
+.sheet #shRows tr:hover input, .sheet #shRows tr:hover select { border-color: var(--line); }
+.sheet input.num { text-align: right; }
+.sheet .bad { border-color: var(--bad) !important; background: var(--bad-bg); }
+.sheet tr.rowerr td { background: var(--bad-bg); }
+.sheet tr.errline td { color: var(--bad); font-size: 12px; padding: 0 6px 4px; }
+.sheet tr.existing td { color: var(--muted); padding: 5px 6px; }
+.sheet tr.existing.draft td { background: var(--warn-bg); }
+.sheet tr.carried td, .sheet tfoot td { font-weight: 700; background: var(--hover); padding: 6px; }
+.sheet .neg { color: var(--bad); }
+.sheet .bal { color: var(--muted); padding-right: 8px; }
+.sheet .rn { color: var(--muted); }
+.sheet .cellnote { color: var(--warn); font-size: 11px; padding: 0 5px; }
 
 #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; z-index: 10; }
 #toast div { padding: 8px 14px; border-radius: 6px; background: var(--text); color: var(--bg); box-shadow: 0 4px 16px rgba(0,0,0,.2); max-width: 560px; }
@@ -327,7 +345,7 @@ const RESOURCES = [
       { label: 'Post', when: r => r.status === 'draft', run: r => postTransaction(r) },
       { label: 'Reverse', when: r => r.status === 'posted', run: r => reverseTransaction(r) },
     ] },
-  { group: 'Books', key: 'transactions-bulk', label: 'Bulk Transactions', view: () => renderBulkTransactions() },
+  { group: 'Books', key: 'transactions-bulk', label: 'Bank Entry Sheet (bulk)', view: () => renderBulkTransactions() },
   { group: 'Books', key: 'posting-batches', label: 'Posting Batches', readOnly: true,
     note: 'Batches are opened automatically: the first transaction of a business day creates one per bank account. A business day runs 10:00 AM to 10:00 AM PKT; at 10:00 AM the batch closes and the next one starts.',
     fields: [],
@@ -373,6 +391,12 @@ const RESOURCES = [
     filters: [{ name: 'report_id', label: 'Report', type: 'ref', ref: 'reports' }, { name: 'category_id', label: 'Category', type: 'ref', ref: 'report-categories' }],
     columns: [['Report', r => r.report ? `#${r.report.id} ${r.report.report_type}` : ''], ['Bank account', r => r.report?.bank_account?.title], ['Category', r => r.category?.name]] },
 ];
+
+// "Bulk create" screens: one grid per resource whose create endpoint takes many rows.
+for (const key of ['companies', 'banks', 'bank-accounts', 'currencies', 'exchange-rates', 'chart-account-groups', 'chart-accounts', 'transactions']) {
+  const base = RESOURCES.find(r => r.key === key);
+  RESOURCES.push({ group: 'Bulk create', key: 'bulk-' + key, label: base.label + (key === 'transactions' ? ' (any account)' : ''), view: () => renderBulkGrid(key) });
+}
 
 /* ---------- helpers ---------- */
 const $ = s => document.querySelector(s);
@@ -512,48 +536,742 @@ function money(v) {
 const moneyTd = v => `<td class="num${v < 0 ? ' neg' : ''}">${esc(money(v))}</td>`;
 const niceDate = d => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '';
 
-/* ---------- bulk transactions ---------- */
+/* ---------- bulk transactions: bank entry sheet ---------- */
+// One sheet per bank account (and currency). Rows: Date, Description, Group, Account, Reference, Debit | Credit.
+// Debit = money out, Credit = money in; a row takes one or the other. Paste straight from Excel, or import .xlsx/.csv.
+const SHEET_COLS = ['date', 'description', 'group', 'account', 'reference', 'debit', 'credit'];
+const sheet = { accountId: null, currencyId: null, rows: [], dateOrder: 'dmy', ctx: null, result: '' };
+const blankRow = () => ({ date: '', description: '', groupId: '', accountId: '', reference: '', debit: '', credit: '', note: '', errors: {} });
+const rowIsEmpty = r => !r.date && !r.description && !r.accountId && !r.reference && !r.debit && !r.credit && !r.note;
+const toNum = v => { const n = parseFloat(String(v ?? '').replace(/,/g, '')); return isFinite(n) ? n : 0; };
+const fmt2 = v => Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const bankAccLabel = a => `${(a.companies || []).map(c => c.name).join(', ') || 'No company'} — ${a.title}${a.account_number ? ` (${a.account_number})` : ''}`;
+const norm = s => String(s ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+// "03-Nov-26", "2026-11-03", "3/11/2026", Excel serial 46329, Date objects -> "2026-11-03" (or '' when unreadable).
+function parseSheetDate(v, order = sheet.dateOrder) {
+  if (v === null || v === undefined || v === '') return '';
+  if (v instanceof Date && !isNaN(v)) return `${v.getFullYear()}-${pad(v.getMonth() + 1)}-${pad(v.getDate())}`;
+  const s = String(v).trim();
+  if (/^\d{4,5}(\.\d+)?$/.test(s) && +s > 20000 && +s < 80000) { // Excel serial day
+    const d = new Date(Math.round((+s - 25569) * 86400000));
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+  }
+  const yr = y => (y.length === 2 ? 2000 + +y : +y);
+  const ok = (y, m, d) => (m >= 1 && m <= 12 && d >= 1 && d <= 31 ? `${y}-${pad(m)}-${pad(d)}` : '');
+  let m;
+  if ((m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/))) return ok(+m[1], +m[2], +m[3]);
+  const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+  if ((m = s.match(/^(\d{1,2})[-\s/.]([a-z]{3})[a-z]*[-\s/.,]+(\d{2,4})$/i))) return ok(yr(m[3]), months.indexOf(m[2].toLowerCase()) + 1, +m[1]);
+  if ((m = s.match(/^([a-z]{3})[a-z]*[-\s/.]+(\d{1,2}),?[-\s/.]+(\d{2,4})$/i))) return ok(yr(m[3]), months.indexOf(m[1].toLowerCase()) + 1, +m[2]);
+  if ((m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/))) {
+    const [a, b] = [+m[1], +m[2]];
+    return order === 'mdy' ? ok(yr(m[3]), a, b) : ok(yr(m[3]), b, a);
+  }
+  return '';
+}
+
+// "1,234.50", "$ 500", "(391.00)", "-25" -> number ('' when blank or unreadable).
+function parseSheetAmount(v) {
+  if (v === null || v === undefined || v === '') return '';
+  if (typeof v === 'number') return v;
+  let s = String(v).trim();
+  if (!s || s === '-') return '';
+  const neg = /^\(.*\)$/.test(s) || s.startsWith('-');
+  s = s.replace(/[^0-9.]/g, '');
+  if (!s || isNaN(+s)) return NaN;
+  return neg ? -(+s) : +s;
+}
+
+function sheetLookups(groups, charts) {
+  const byGroup = {};
+  for (const c of charts) (byGroup[c.chart_account_group_id ?? c.group?.id ?? ''] ||= []).push(c);
+  const findGroup = text => {
+    const t = norm(text);
+    if (!t) return null;
+    return groups.find(g => norm(g.name) === t || norm(g.recon_label) === t) || null;
+  };
+  const findAccount = (text, groupId) => {
+    const t = norm(text);
+    if (!t) return null;
+    const pool = groupId ? charts.filter(c => String(c.chart_account_group_id ?? c.group?.id) === String(groupId)) : charts;
+    const tests = [
+      c => norm(c.acc_code) === t,
+      c => norm(`${c.acc_code} ${c.name}`) === t || norm(`${c.acc_code} — ${c.name}`) === t || norm(`${c.acc_code} - ${c.name}`) === t,
+      c => norm(c.name) === t,
+      c => t.startsWith(norm(c.acc_code) + ' '),
+    ];
+    for (const test of tests) {
+      const hit = pool.filter(test);
+      if (hit.length === 1) return hit[0];
+      if (hit.length > 1) return null; // ambiguous: let the user pick
+    }
+    return groupId ? findAccount(text, null) : null;
+  };
+  return { byGroup, findGroup, findAccount };
+}
+
 async function renderBulkTransactions() {
-  const [accounts, charts, currencies] = await Promise.all([loadRef('bank-accounts'), loadRef('chart-accounts'), loadRef('currencies')]);
-  const row = (amount, type) => ({
-    bank_account_id: accounts[0]?.id ?? 1, chart_account_id: charts[0]?.id ?? 1,
-    currency_id: accounts[0]?.currencies?.[0]?.id ?? currencies[0]?.id ?? 1,
-    transaction_date: today(), type, amount, description: '', reference: '',
-  });
-  const sample = state.bulkDraft || JSON.stringify({ transactions: [row(100, 'credit'), row(25.5, 'debit')] }, null, 2);
+  const [accounts, groups, charts] = await Promise.all([loadRef('bank-accounts'), loadRef('chart-account-groups'), loadRef('chart-accounts')]);
+  if (state.current?.key !== 'transactions-bulk') return;
+  const activeGroups = groups.filter(g => g.is_active !== false).sort((a, b) => a.name.localeCompare(b.name));
+  const activeCharts = charts.filter(c => c.is_active !== false).sort((a, b) => String(a.acc_code).localeCompare(String(b.acc_code), undefined, { numeric: true }));
+  const L = sheetLookups(activeGroups, activeCharts);
+  const chartById = Object.fromEntries(charts.map(c => [c.id, c]));
+  const sortedAccounts = accounts.filter(a => a.is_active !== false).sort((a, b) => bankAccLabel(a).localeCompare(bankAccLabel(b)));
+  const acc = accounts.find(a => String(a.id) === String(sheet.accountId));
+  const currencies = acc?.currencies || [];
+  if (acc && !currencies.some(c => String(c.id) === String(sheet.currencyId))) sheet.currencyId = currencies[0]?.id ?? null;
+  const currency = currencies.find(c => String(c.id) === String(sheet.currencyId));
+  if (acc && !sheet.rows.length) sheet.rows = Array.from({ length: 5 }, blankRow);
 
   $('#main').innerHTML = `
     <div class="titlebar">
-      <div><h2>Bulk Transactions</h2><div class="endpoint">POST <code>/finance/transactions/create</code> with <code>{"transactions": [...]}</code> or a bare array · all saved or none</div></div>
+      <div><h2>Bank Entry Sheet</h2><div class="endpoint">POST <code>/finance/transactions/create</code> with <code>{"transactions": [...]}</code> · all saved or none · up to 500 rows</div></div>
+      <div class="grow"></div>
+      <span class="endpoint">Tab moves across · Enter adds a row · paste straight from Excel</span>
     </div>
-    <form id="bulkForm">
-      <div class="field"><label>Body (JSON)</label><textarea name="body" spellcheck="false" style="min-height:320px;font-family:ui-monospace,monospace;font-size:12px">${esc(sample)}</textarea>
-        <div class="hint">Same fields as a single transaction. Up to 500 per request. Ids are prefilled from the first bank account, chart account and currency.</div></div>
-      <div style="display:flex;gap:6px;margin:8px 0"><button class="primary" type="submit">Create all</button><button type="button" id="bulkReset">Reset sample</button></div>
-    </form>
-    <div id="bulkOut"></div>`;
+    <div class="filters">
+      <div class="f" style="flex:1 1 360px"><label>Company &amp; bank account <span style="color:var(--bad)">*</span></label>
+        <select id="shAccount"><option value="">Select a bank account to start…</option>${sortedAccounts.map(a => `<option value="${a.id}" ${String(a.id) === String(sheet.accountId) ? 'selected' : ''}>${esc(bankAccLabel(a))}</option>`).join('')}</select></div>
+      ${acc ? `<div class="f" style="flex:0 1 120px"><label>Currency</label><select id="shCurrency">${currencies.length ? currencies.map(c => `<option value="${c.id}" ${String(c.id) === String(sheet.currencyId) ? 'selected' : ''}>${esc(c.code)}</option>`).join('') : '<option value="">none linked</option>'}</select></div>` : ''}
+      <div id="shBadges" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding-bottom:4px"></div>
+    </div>
+    ${!acc ? '<div class="empty">Pick a bank account to enter or import transactions.</div>' : !currencies.length ? '<div class="banner bad">This bank account has no currency linked, so it cannot take transactions. Link one under Setup → Bank Accounts.</div>' : `
+    <div class="filters" style="align-items:center">
+      <b style="font-size:13px">Excel import</b>
+      <input type="file" id="shFile" accept=".xlsx,.xls,.csv,.tsv,.txt" style="width:auto;flex:0 1 260px">
+      <div class="f" style="flex:0 1 150px;min-width:0"><label>Dates like 03/11/2026 are</label><select id="shDateOrder"><option value="dmy" ${sheet.dateOrder === 'dmy' ? 'selected' : ''}>DD/MM/YYYY</option><option value="mdy" ${sheet.dateOrder === 'mdy' ? 'selected' : ''}>MM/DD/YYYY</option></select></div>
+      <button type="button" id="shTemplate">Download template</button>
+      <span class="endpoint" style="flex:1 1 260px">Headers: <code>Date, Description, Group, Account, Reference, Debit, Credit</code> (<code>#</code> and <code>Balance</code> are ignored). Account matches by code, “code name” or name.</span>
+    </div>
+    <div id="shErrors"></div>
+    <div class="sheetwrap"><table class="sheet" id="shTable">
+      <thead><tr><th style="width:36px">#</th><th style="width:140px">Date</th><th style="min-width:200px">Description</th><th style="width:170px">Group</th><th style="width:230px">Account</th><th style="width:130px">Reference</th><th class="num" style="width:115px">Debit</th><th class="num" style="width:115px">Credit</th><th class="num" style="width:125px">Balance</th><th style="width:34px"></th></tr></thead>
+      <tbody id="shExisting"><tr><td colspan="10" class="empty">Loading recent entries…</td></tr></tbody>
+      <tbody id="shRows"></tbody>
+      <tfoot><tr><td colspan="6" class="num">New entry totals <span class="endpoint" id="shCount"></span></td><td class="num" id="shDebit" style="color:var(--bad)">0.00</td><td class="num" id="shCredit" style="color:var(--ok)">0.00</td><td class="num" id="shClosing"></td><td></td></tr></tfoot>
+    </table></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin:10px 0">
+      <button type="button" id="shAdd">+ Add row</button><button type="button" id="shAdd10">+10 rows</button>
+      <button type="button" id="shClearEmpty">Clear empty rows</button><button type="button" class="danger" id="shClearAll">Clear sheet</button>
+      <div class="grow" style="flex:1"></div>
+      <button type="button" class="primary" id="shSave">Save entries</button>
+    </div>
+    <div id="shOut">${sheet.result}</div>
+    <details style="margin-top:14px"><summary class="endpoint" style="cursor:pointer">Request body (JSON) that Save sends</summary><pre id="shJson"></pre></details>`}`;
 
-  $('#bulkReset').onclick = () => { state.bulkDraft = null; renderBulkTransactions(); };
-  $('#bulkForm').onsubmit = async ev => {
+  $('#shAccount').onchange = e => { sheet.accountId = e.target.value || null; sheet.currencyId = null; sheet.ctx = null; sheet.result = ''; renderBulkTransactions(); };
+  if (!acc || !currencies.length) return;
+  $('#shCurrency').onchange = e => { sheet.currencyId = e.target.value; sheet.ctx = null; renderBulkTransactions(); };
+  $('#shDateOrder').onchange = e => { sheet.dateOrder = e.target.value; };
+
+  /* ----- rows ----- */
+  const groupOpts = sel => `<option value=""></option>` + activeGroups.map(g => `<option value="${g.id}" ${String(g.id) === String(sel) ? 'selected' : ''}>${esc(g.name)}</option>`).join('');
+  const accountOpts = (groupId, sel) => {
+    const list = groupId ? (L.byGroup[groupId] || []) : null;
+    const opt = c => `<option value="${c.id}" ${String(c.id) === String(sel) ? 'selected' : ''}>${esc(c.acc_code)} ${esc(c.name)}</option>`;
+    if (list) return '<option value=""></option>' + list.map(opt).join('');
+    return '<option value=""></option>' + activeGroups.map(g => (L.byGroup[g.id] || []).length ? `<optgroup label="${esc(g.name)}">${L.byGroup[g.id].map(opt).join('')}</optgroup>` : '').join('');
+  };
+  const rowHtml = (r, i) => {
+    const e = r.errors || {}, bad = k => (e[k] ? ' bad' : '');
+    const msgs = [...new Set(Object.values(e))];
+    return `<tr data-i="${i}" class="${msgs.length ? 'rowerr' : ''}">
+      <td class="num rn" title="${esc(msgs.join('\n'))}">${i + 1}${msgs.length ? ' <b style="color:var(--bad)">!</b>' : ''}</td>
+      <td><input data-k="date" type="date" value="${esc(r.date)}" class="${bad('date')}"></td>
+      <td><input data-k="description" value="${esc(r.description)}" maxlength="2000" class="${bad('description')}"></td>
+      <td><select data-k="groupId" class="${bad('group')}">${groupOpts(r.groupId)}</select></td>
+      <td><select data-k="accountId" class="${bad('account')}">${accountOpts(r.groupId, r.accountId)}</select>${r.note ? `<div class="cellnote">${esc(r.note)}</div>` : ''}</td>
+      <td><input data-k="reference" value="${esc(r.reference)}" maxlength="255" class="${bad('reference')}"></td>
+      <td><input data-k="debit" inputmode="decimal" value="${esc(r.debit)}" class="num${bad('amount')}"></td>
+      <td><input data-k="credit" inputmode="decimal" value="${esc(r.credit)}" class="num${bad('amount')}"></td>
+      <td class="num bal"></td>
+      <td><button type="button" class="small danger" data-del title="Remove row">×</button></td></tr>
+      ${msgs.length ? `<tr class="errline"><td></td><td colspan="9">${msgs.map(esc).join(' · ')}</td></tr>` : ''}`;
+  };
+  const drawRows = (focus) => {
+    $('#shRows').innerHTML = sheet.rows.map(rowHtml).join('');
+    recalc();
+    if (focus) $(`#shRows tr[data-i="${focus.i}"] [data-k="${focus.k}"]`)?.focus();
+  };
+  const startBalance = () => sheet.ctx ? sheet.ctx.closing_balance : 0;
+  const recalc = () => {
+    let bal = startBalance(), dr = 0, cr = 0, n = 0;
+    sheet.rows.forEach((r, i) => {
+      const d = toNum(r.debit), c = toNum(r.credit);
+      const cellEl = $(`#shRows tr[data-i="${i}"] .bal`);
+      if (!d && !c) { if (cellEl) cellEl.textContent = ''; return; }
+      n++; dr += d; cr += c; bal += c - d;
+      if (cellEl) { cellEl.textContent = money(bal); cellEl.classList.toggle('neg', bal < 0); }
+    });
+    $('#shDebit').textContent = fmt2(dr);
+    $('#shCredit').textContent = fmt2(cr);
+    $('#shClosing').innerHTML = `<b class="${bal < 0 ? 'neg' : ''}">${esc(money(bal))}</b>`;
+    $('#shCount').textContent = n ? `(${n} row${n === 1 ? '' : 's'})` : '';
+    $('#shJson').textContent = JSON.stringify({ transactions: buildPayload().payload }, null, 2);
+  };
+
+  const tbody = $('#shRows');
+  tbody.addEventListener('input', ev => {
+    const el = ev.target, tr = el.closest('tr[data-i]'); if (!tr || !el.dataset.k) return;
+    const r = sheet.rows[+tr.dataset.i], k = el.dataset.k;
+    r[k] = el.value;
+    // A row is either a debit or a credit: typing in one empties the other.
+    if (k === 'debit' && el.value !== '') { r.credit = ''; tr.querySelector('[data-k="credit"]').value = ''; }
+    if (k === 'credit' && el.value !== '') { r.debit = ''; tr.querySelector('[data-k="debit"]').value = ''; }
+    recalc();
+  });
+  tbody.addEventListener('change', ev => {
+    const el = ev.target, tr = el.closest('tr[data-i]'); if (!tr) return;
+    const r = sheet.rows[+tr.dataset.i];
+    if (el.dataset.k === 'groupId') {
+      if (r.accountId && String(chartById[r.accountId]?.chart_account_group_id ?? chartById[r.accountId]?.group?.id) !== String(r.groupId)) r.accountId = '';
+      tr.querySelector('[data-k="accountId"]').innerHTML = accountOpts(r.groupId, r.accountId);
+    }
+    if (el.dataset.k === 'accountId' && r.accountId) {
+      const c = chartById[r.accountId];
+      r.groupId = String(c?.chart_account_group_id ?? c?.group?.id ?? '');
+      r.note = '';
+      tr.querySelector('[data-k="groupId"]').value = r.groupId;
+      tr.querySelector('[data-k="accountId"]').innerHTML = accountOpts(r.groupId, r.accountId);
+      tr.querySelector('.cellnote')?.remove();
+    }
+    if (el.dataset.k === 'debit' || el.dataset.k === 'credit') {
+      const v = parseSheetAmount(el.value);
+      if (typeof v === 'number' && !isNaN(v)) { r[el.dataset.k] = String(Math.abs(v)); el.value = r[el.dataset.k]; }
+      recalc();
+    }
+  });
+  tbody.addEventListener('click', ev => {
+    const b = ev.target.closest('[data-del]'); if (!b) return;
+    sheet.rows.splice(+b.closest('tr').dataset.i, 1);
+    if (!sheet.rows.length) sheet.rows.push(blankRow());
+    drawRows();
+  });
+  tbody.addEventListener('keydown', ev => {
+    if (ev.key !== 'Enter' || ev.target.tagName === 'BUTTON') return;
     ev.preventDefault();
-    const text = ev.target.body.value;
-    state.bulkDraft = text;
-    let body;
-    try { body = JSON.parse(text); } catch (e) { $('#bulkOut').innerHTML = `<div class="banner bad">Not valid JSON: ${esc(e.message)}</div>`; return; }
+    const tr = ev.target.closest('tr[data-i]'), i = +tr.dataset.i;
+    if (i === sheet.rows.length - 1) { sheet.rows.push(blankRow()); drawRows({ i: i + 1, k: 'date' }); }
+    else $(`#shRows tr[data-i="${i + 1}"] [data-k="date"]`)?.focus();
+  });
+  // Paste a block from Excel: fills across and down from the focused cell, adding rows as needed.
+  tbody.addEventListener('paste', ev => {
+    const text = ev.clipboardData?.getData('text/plain') || '';
+    if (!/[\t\n]/.test(text.trim())) return; // a single value: let the browser paste it
+    ev.preventDefault();
+    const grid = text.replace(/\r/g, '').replace(/\n+$/, '').split('\n').map(l => l.split('\t'));
+    const tr = ev.target.closest('tr[data-i]');
+    const colOf = { date: 0, description: 1, groupId: 2, accountId: 3, reference: 4, debit: 5, credit: 6 };
+    importGrid(grid, { at: +tr.dataset.i, col: colOf[ev.target.dataset.k] ?? 0 });
+  });
 
-    const res = await api('POST', '/finance/transactions/create', { body });
+  /* ----- import (paste or file) ----- */
+  const HEAD = {
+    date: ['date', 'transaction date', 'txn date', 'value date', 'posting date'],
+    description: ['description', 'details', 'narration', 'particulars', 'memo'],
+    group: ['group', 'account group', 'chart group', 'category'],
+    account: ['account', 'chart account', 'chart of account', 'gl account', 'account code', 'code'],
+    reference: ['reference', 'ref', 'ref #', 'ref no', 'cheque no', 'check no'],
+    debit: ['debit', 'dr', 'withdrawal', 'money out', 'out', 'debit (out)'],
+    credit: ['credit', 'cr', 'deposit', 'money in', 'in', 'credit (in)'],
+    amount: ['amount'], type: ['type', 'dr/cr'],
+  };
+  const headerMap = row => {
+    const map = {};
+    row.forEach((h, idx) => { const t = norm(h).replace(/[:*]/g, ''); for (const [k, names] of Object.entries(HEAD)) if (!(k in map) && names.includes(t)) map[k] = idx; });
+    return 'date' in map && ('debit' in map || 'credit' in map || 'amount' in map) ? map : null;
+  };
+  function importGrid(grid, { at = null, col = 0 } = {}) {
+    grid = grid.filter(r => r.some(v => String(v ?? '').trim() !== ''));
+    if (!grid.length) return toast('Nothing to import.', true);
+    let map = null, start = 0;
+    for (let i = 0; i < Math.min(grid.length, 10); i++) if ((map = headerMap(grid[i]))) { start = i + 1; break; }
+    if (!map) { // no header row: columns in sheet order, from the focused column
+      map = {}; SHEET_COLS.slice(col).forEach((k, j) => { map[k] = j; });
+    } else col = 0;
+    const get = (row, k) => (k in map ? row[map[k]] : undefined);
+    const rows = grid.slice(start).map(src => {
+      const r = blankRow(), notes = [];
+      r.date = parseSheetDate(get(src, 'date'));
+      if (get(src, 'date') !== undefined && String(get(src, 'date')).trim() && !r.date) notes.push(`date “${get(src, 'date')}” not understood`);
+      r.description = String(get(src, 'description') ?? '').trim();
+      r.reference = String(get(src, 'reference') ?? '').trim();
+      const gText = String(get(src, 'group') ?? '').trim(), aText = String(get(src, 'account') ?? '').trim();
+      const g = L.findGroup(gText);
+      if (g) r.groupId = String(g.id); else if (gText) notes.push(`group “${gText}” not found`);
+      const a = L.findAccount(aText, r.groupId);
+      if (a) { r.accountId = String(a.id); r.groupId = String(a.chart_account_group_id ?? a.group?.id ?? r.groupId); }
+      else if (aText) notes.push(`account “${aText}” not found or ambiguous`);
+      let d = parseSheetAmount(get(src, 'debit')), c = parseSheetAmount(get(src, 'credit'));
+      if ('amount' in map && d === '' && c === '') {
+        const amt = parseSheetAmount(get(src, 'amount')), t = norm(get(src, 'type'));
+        if (typeof amt === 'number') (t.startsWith('d') || (!t && amt < 0) ? (d = Math.abs(amt)) : (c = Math.abs(amt)));
+      }
+      if (typeof d === 'number' && d < 0) { c = c === '' ? -d : c; d = ''; } // a negative debit is money in
+      if (typeof c === 'number' && c < 0) { d = d === '' ? -c : d; c = ''; }
+      if (Number.isNaN(d) || Number.isNaN(c)) notes.push('amount not understood');
+      r.debit = typeof d === 'number' && !isNaN(d) && d ? String(d) : '';
+      r.credit = typeof c === 'number' && !isNaN(c) && c ? String(c) : '';
+      if (r.debit && r.credit) notes.push('has both debit and credit — keep one');
+      r.note = notes.join('; ');
+      return r;
+    });
+    if (at === null) { // file import: append after the last non-empty row
+      const keep = sheet.rows.filter(r => !rowIsEmpty(r));
+      sheet.rows = keep.concat(rows);
+    } else if (col > 0 && !start) { // pasted into the middle of a row: merge into existing rows
+      rows.forEach((r, j) => {
+        const cur = sheet.rows[at + j] || (sheet.rows[at + j] = blankRow());
+        for (const k of SHEET_COLS.slice(col)) {
+          const key = k === 'group' ? 'groupId' : k === 'account' ? 'accountId' : k;
+          if (k in map && r[key] !== '') cur[key] = r[key];
+          if (k === 'account' && r.groupId) cur.groupId = r.groupId;
+        }
+        if (cur.debit && cur.credit) cur.note = 'has both debit and credit — keep one';
+        if (r.note) cur.note = r.note;
+      });
+    } else {
+      sheet.rows.splice(at, rows.length, ...rows);
+    }
+    if (sheet.rows.length > 500) toast(`The API takes 500 rows per save; you have ${sheet.rows.length}.`, true);
+    const flagged = rows.filter(r => r.note).length;
+    toast(`Imported ${rows.length} row${rows.length === 1 ? '' : 's'}${flagged ? ` · ${flagged} need a look` : ''}`, !!flagged);
+    drawRows();
+  }
+
+  $('#shFile').onchange = async ev => {
+    const file = ev.target.files[0]; if (!file) return;
+    try {
+      let grid;
+      if (/\.(csv|tsv|txt)$/i.test(file.name)) {
+        const text = await file.text();
+        grid = parseDelimited(text, /\.tsv$/i.test(file.name) || (text.split('\n')[0].includes('\t')) ? '\t' : ',');
+      } else {
+        const XLSX = await loadSheetJs();
+        const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true });
+        grid = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: '' });
+      }
+      importGrid(grid);
+    } catch (e) { toast('Could not read the file: ' + e.message, true); }
+    ev.target.value = '';
+  };
+  $('#shTemplate').onclick = () => {
+    const sample = activeCharts[0];
+    const csv = 'Date,Description,Group,Account,Reference,Debit,Credit\r\n'
+      + `${today()},Sample money out,"${sample?.group?.name ?? ''}","${sample ? sample.acc_code + ' ' + sample.name : ''}",REF-1,500.00,\r\n`
+      + `${today()},Sample money in,"${sample?.group?.name ?? ''}","${sample ? sample.acc_code + ' ' + sample.name : ''}",REF-2,,1250.00\r\n`;
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })), download: 'bank-entry-template.csv' });
+    a.click(); URL.revokeObjectURL(a.href);
+  };
+
+  $('#shAdd').onclick = () => { sheet.rows.push(blankRow()); drawRows({ i: sheet.rows.length - 1, k: 'date' }); };
+  $('#shAdd10').onclick = () => { for (let i = 0; i < 10; i++) sheet.rows.push(blankRow()); drawRows(); };
+  $('#shClearEmpty').onclick = () => { sheet.rows = sheet.rows.filter(r => !rowIsEmpty(r)); if (!sheet.rows.length) sheet.rows.push(blankRow()); drawRows(); };
+  $('#shClearAll').onclick = () => { if (!confirm('Remove all unsaved rows from the sheet?')) return; sheet.rows = Array.from({ length: 5 }, blankRow); sheet.result = ''; $('#shOut').innerHTML = ''; drawRows(); };
+
+  /* ----- save ----- */
+  function buildPayload() {
+    const payload = [], index = [];
+    sheet.rows.forEach((r, i) => {
+      if (rowIsEmpty(r)) return;
+      const d = toNum(r.debit), c = toNum(r.credit);
+      payload.push({
+        bank_account_id: +sheet.accountId, currency_id: +sheet.currencyId,
+        chart_account_id: r.accountId ? +r.accountId : null,
+        transaction_date: r.date || null,
+        type: c && !d ? 'credit' : 'debit', amount: c && !d ? c : d,
+        description: r.description || null, reference: r.reference || null,
+      });
+      index.push(i);
+    });
+    return { payload, index };
+  }
+  function checkRows() {
+    let count = 0;
+    const opening = acc.opening_date;
+    sheet.rows.forEach(r => {
+      r.errors = {};
+      if (rowIsEmpty(r)) return;
+      if (!r.date) r.errors.date = 'Date is required';
+      else if (opening && r.date < opening) r.errors.date = `Date is before the opening date ${opening}`;
+      if (!r.accountId) r.errors.account = r.note || 'Account is required';
+      const d = toNum(r.debit), c = toNum(r.credit);
+      if (d && c) r.errors.amount = 'Enter either a debit or a credit, not both';
+      else if (!(d > 0) && !(c > 0)) r.errors.amount = 'Enter a debit or a credit amount above 0';
+      if (Object.keys(r.errors).length) count++;
+    });
+    return count;
+  }
+  $('#shSave').onclick = async () => {
+    const bad = checkRows();
+    const { payload, index } = buildPayload();
+    if (!payload.length) { drawRows(); return toast('The sheet has no entries to save.', true); }
+    if (bad) { drawRows(); $('#shErrors').innerHTML = `<div class="banner bad">${bad} row${bad === 1 ? '' : 's'} need${bad === 1 ? 's' : ''} fixing before saving (marked in red).</div>`; return; }
+    if (payload.length > 500) return toast('The API takes at most 500 rows per save. Split the sheet.', true);
+    $('#shErrors').innerHTML = '';
+    $('#shSave').disabled = true;
+    const res = await api('POST', '/finance/transactions/create', { body: { transactions: payload } });
+    $('#shSave').disabled = false;
     if (res.status === 201) {
-      const rows = [].concat(res.json.data);
-      toast(res.json.message);
-      $('#bulkOut').innerHTML = `<div class="banner ok">${esc(res.json.message)}</div>
-        <div class="tablewrap"><table><thead><tr><th>ID</th><th>Date</th><th>Bank account</th><th>Type</th><th class="num">Amount</th><th>Batch</th></tr></thead><tbody>${
-          rows.map(t => `<tr><td>${t.id}</td><td>${esc(t.transaction_date)}</td><td>${esc(t.bank_account?.title ?? '')}</td><td>${esc(t.type)}</td><td class="num">${esc(t.amount)} ${esc(t.currency?.code ?? '')}</td><td>${t.posting_batch ? '#' + t.posting_batch.id : ''}</td></tr>`).join('')
-        }</tbody></table></div>`;
+      const made = [].concat(res.json.data);
+      sheet.result = `<div class="banner" style="background:var(--ok-bg);color:var(--ok)">${esc(res.json.message || 'Saved')} — ${made.length} entr${made.length === 1 ? 'y' : 'ies'} saved as draft${made[0]?.posting_batch ? ` in batch #${made[0].posting_batch.id}` : ''}.</div>`;
+      toast(res.json.message || 'Saved');
+      sheet.rows = Array.from({ length: 5 }, blankRow);
+      sheet.ctx = null;
+      return renderBulkTransactions();
+    }
+    // Map "transactions.3.amount" / "transactions.3" back to the sheet row.
+    const general = [];
+    for (const [key, msgs] of Object.entries(res.json?.errors || {})) {
+      const m = key.match(/^transactions\.(\d+)(?:\.(\w+))?$/);
+      const text = [].concat(msgs).join(' ');
+      if (!m) { general.push(`${key}: ${text}`); continue; }
+      const r = sheet.rows[index[+m[1]]]; if (!r) continue;
+      const f = { transaction_date: 'date', chart_account_id: 'account', amount: 'amount', type: 'amount', description: 'description', reference: 'reference', currency_id: 'row', bank_account_id: 'row' }[m[2]] || 'row';
+      r.errors[f] = text;
+    }
+    drawRows();
+    $('#shErrors').innerHTML = `<div class="banner bad">${esc(apiError(res))} — nothing was saved.${general.length ? `<ul style="margin:6px 0 0 18px">${general.map(g => `<li>${esc(g)}</li>`).join('')}</ul>` : ''}</div>`;
+  };
+
+  drawRows();
+
+  /* ----- current balance and recent entries ----- */
+  if (!sheet.ctx) {
+    const from = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
+    const res = await api('GET', `/finance/statements/${acc.id}`, { query: { currency_id: sheet.currencyId, from_date: acc.opening_date && acc.opening_date > from ? acc.opening_date : from, to_date: '2099-12-31' } });
+    if (state.current?.key !== 'transactions-bulk' || String(sheet.accountId) !== String(acc.id)) return;
+    sheet.ctx = res.status === 200 ? res.json.data : { closing_balance: 0, rows: [], failed: apiError(res) };
+  }
+  const ctx = sheet.ctx;
+  const recent = (ctx.rows || []).slice(-10);
+  const hidden = (ctx.rows || []).length - recent.length;
+  $('#shBadges').innerHTML = `<span class="pill">Currency: <b>${esc(currency?.code ?? '')}</b></span>
+    <span class="pill">Opening: <b>${esc(fmt2(acc.opening_balance))}</b>${acc.opening_date ? ' on ' + esc(niceDate(acc.opening_date)) : ''}</span>
+    <span class="pill ok">Current balance: <b>${esc(currency?.code ?? '')} ${esc(money(ctx.closing_balance))}</b></span>
+    ${ctx.draft_count ? `<span class="pill warn">${ctx.draft_count} draft${ctx.draft_count === 1 ? '' : 's'}</span>` : ''}`;
+  $('#shExisting').innerHTML = ctx.failed ? `<tr><td colspan="10"><div class="banner bad" style="margin:0">Could not load the current balance: ${esc(ctx.failed)}. Balances below start at 0.</div></td></tr>` : `
+    ${hidden > 0 ? `<tr class="existing"><td></td><td colspan="7" class="endpoint">… ${hidden} earlier entr${hidden === 1 ? 'y' : 'ies'} (see Reports → Bank Statement)</td><td></td><td></td></tr>` : ''}
+    ${recent.map(r => `<tr class="existing${r.status === 'draft' ? ' draft' : ''}">
+      <td class="num" title="${r.status === 'draft' ? 'Draft — not yet posted' : 'Posted — final'}">${r.status === 'draft' ? '✎' : '🔒'}</td>
+      <td>${esc(niceDate(r.transaction_date))}</td><td>${esc(r.description || '')}</td>
+      <td class="endpoint">${esc(chartById[r.chart_account_id]?.group?.name || '')}</td>
+      <td>${esc([r.chart_account_code, r.chart_account_name].filter(Boolean).join(' '))}</td><td>${esc(r.reference || '')}</td>
+      <td class="num">${r.debit === null ? '' : esc(fmt2(r.debit))}</td><td class="num">${r.credit === null ? '' : esc(fmt2(r.credit))}</td>
+      <td class="num">${esc(money(r.balance))}</td><td></td></tr>`).join('')}
+    <tr class="carried"><td></td><td colspan="7" class="num">Balance carried forward</td><td class="num${ctx.closing_balance < 0 ? ' neg' : ''}">${esc(money(ctx.closing_balance))}</td><td></td></tr>`;
+  recalc();
+}
+
+// Minimal CSV/TSV parser with quoted fields.
+function parseDelimited(text, sep = ',') {
+  const rows = []; let row = [], val = '', q = false;
+  text = text.replace(/^﻿/, '');
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) { if (ch === '"') { if (text[i + 1] === '"') { val += '"'; i++; } else q = false; } else val += ch; }
+    else if (ch === '"') q = true;
+    else if (ch === sep) { row.push(val); val = ''; }
+    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(val); rows.push(row); row = []; val = ''; }
+    else val += ch;
+  }
+  if (val !== '' || row.length) { row.push(val); rows.push(row); }
+  return rows;
+}
+
+// SheetJS, loaded only when an .xlsx/.xls file is imported.
+let sheetJsPromise = null;
+function loadSheetJs() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  return sheetJsPromise ||= new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+    s.onload = () => resolve(window.XLSX);
+    s.onerror = () => { sheetJsPromise = null; reject(new Error('could not load the Excel reader (offline?). Save the sheet as CSV and import that.')); };
+    document.head.appendChild(s);
+  });
+}
+
+/* ---------- bulk create: one grid screen per resource ---------- */
+// Each create endpoint also takes many records: {"<key>": [{...}, ...]} or a bare JSON array, all saved or none.
+const BULK_KEYS = {
+  companies: 'companies', banks: 'banks', 'bank-accounts': 'bank_accounts', currencies: 'currencies',
+  'exchange-rates': 'rates', 'chart-account-groups': 'groups', 'chart-accounts': 'accounts', transactions: 'transactions',
+};
+const bulkState = { dateOrder: 'dmy' };
+const bulkOf = key => (bulkState[key] ||= { rows: [], bare: false, result: '' });
+
+// Text from a sheet ("Synovatech Inc", "USD", "4123 VPN", "12") -> record id, or null.
+function resolveRef(rows, refKey, text) {
+  const t = norm(text);
+  if (!t) return null;
+  if (/^\d+$/.test(t)) { const byId = rows.find(r => String(r.id) === t); if (byId) return byId.id; }
+  const tests = [
+    r => norm(refLabel[refKey] ? refLabel[refKey](r) : '') === t,
+    r => ['name', 'code', 'title', 'acc_code', 'account_number', 'short_code'].some(k => r[k] !== undefined && r[k] !== null && norm(r[k]) === t),
+    r => r.acc_code && (norm(`${r.acc_code} ${r.name}`) === t || norm(`${r.acc_code} - ${r.name}`) === t),
+  ];
+  for (const test of tests) {
+    const hit = rows.filter(test);
+    if (hit.length === 1) return hit[0].id;
+    if (hit.length > 1) return null;
+  }
+  return null;
+}
+
+async function renderBulkGrid(resKey) {
+  const r = RESOURCES.find(x => x.key === resKey);
+  const bulkKey = BULK_KEYS[resKey];
+  const st = bulkOf(resKey);
+  const fields = r.fields;
+  const refs = {};
+  await Promise.all([...new Set(fields.filter(f => f.ref).map(f => f.ref))].map(async k => { refs[k] = await loadRef(k); }));
+  if (state.current?.key !== 'bulk-' + resKey) return;
+
+  const defaults = () => Object.fromEntries(fields.map(f => [f.name, f.type === 'bool' ? (f.default ?? false) : (typeof f.default === 'function' ? f.default() : (f.default ?? ''))]));
+  const blank = () => ({ v: defaults(), errors: {} });
+  const isEmpty = row => fields.every(f => f.type === 'bool' || row.v[f.name] === '' || row.v[f.name] === null || row.v[f.name] === undefined || (typeof f.default === 'function' && row.v[f.name] === f.default()));
+  if (!st.rows.length) st.rows = Array.from({ length: 3 }, blank);
+
+  const multiResolve = (f, text) => {
+    const parts = String(text ?? '').split(/[,;\n]/).map(s => s.trim()).filter(Boolean);
+    const ids = [], missing = [];
+    for (const p of parts) { const id = resolveRef(refs[f.ref], f.ref, p); id ? ids.push(id) : missing.push(p); }
+    return { ids: [...new Set(ids)], missing };
+  };
+  const refName = (f, id) => { const rec = refs[f.ref].find(x => String(x.id) === String(id)); return rec ? (refLabel[f.ref] ? refLabel[f.ref](rec) : '#' + id) : '#' + id; };
+
+  const cellHtml = (f, row) => {
+    const v = row.v[f.name], bad = row.errors[f.name] ? ' bad' : '';
+    const title = row.errors[f.name] ? ` title="${esc(row.errors[f.name])}"` : '';
+    switch (f.type) {
+      case 'bool': return `<td style="text-align:center"><input type="checkbox" data-k="${f.name}" ${v ? 'checked' : ''} style="width:auto"></td>`;
+      case 'select': return `<td><select data-k="${f.name}" class="${bad}"${title}><option value=""></option>${f.options.map(o => `<option value="${esc(o.value)}" ${String(v) === o.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select></td>`;
+      case 'ref': return `<td><select data-k="${f.name}" class="${bad}"${title}>${optionsHtml(refs[f.ref], f.ref, v)}</select></td>`;
+      case 'multiref': {
+        const { ids, missing } = multiResolve(f, v);
+        const note = missing.length ? `<div class="cellnote" style="color:var(--bad)">not found: ${esc(missing.join(', '))}</div>` : ids.length ? `<div class="cellnote" style="color:var(--muted)">${esc(ids.map(id => refName(f, id)).join(' · '))}</div>` : '';
+        return `<td><input data-k="${f.name}" value="${esc(v)}" placeholder="names or ids, comma separated" list="dl-${f.ref}" class="${bad}"${title}>${note}</td>`;
+      }
+      case 'date': return `<td><input data-k="${f.name}" type="date" value="${esc(String(v ?? '').slice(0, 10))}" class="${bad}"${title}></td>`;
+      case 'number': return `<td><input data-k="${f.name}" inputmode="decimal" value="${esc(v)}" class="num${bad}"${title}></td>`;
+      default: return `<td><input data-k="${f.name}" value="${esc(v)}" class="${bad}"${title}></td>`;
+    }
+  };
+  const rowHtml = (row, i) => {
+    const msgs = [...new Set(Object.values(row.errors))];
+    return `<tr data-i="${i}" class="${msgs.length ? 'rowerr' : ''}"><td class="num rn">${i + 1}</td>${fields.map(f => cellHtml(f, row)).join('')}
+      <td><button type="button" class="small danger" data-del title="Remove row">×</button></td></tr>
+      ${msgs.length ? `<tr class="errline"><td></td><td colspan="${fields.length + 1}">${msgs.map(esc).join(' · ')}</td></tr>` : ''}`;
+  };
+
+  const minWidth = 60 + fields.reduce((w, f) => w + ({ bool: 70, date: 150, number: 120, multiref: 240, ref: 220, textarea: 220 }[f.type] || 170), 0);
+  $('#main').innerHTML = `
+    <div class="titlebar">
+      <div><h2>Bulk create — ${esc(r.label)}</h2><div class="endpoint">POST <code>/finance/${esc(resKey)}/create</code> with <code>{"${esc(bulkKey)}": [...]}</code> or a bare array · all saved or none · up to 500 rows</div></div>
+      <div class="grow"></div><span class="endpoint">Tab moves across · Enter adds a row · paste straight from Excel</span>
+    </div>
+    <div class="filters" style="align-items:center">
+      <b style="font-size:13px">Excel import</b>
+      <input type="file" id="bgFile" accept=".xlsx,.xls,.csv,.tsv,.txt" style="width:auto;flex:0 1 260px">
+      ${fields.some(f => f.type === 'date') ? `<div class="f" style="flex:0 1 150px;min-width:0"><label>Dates like 03/11/2026 are</label><select id="bgDateOrder"><option value="dmy" ${bulkState.dateOrder === 'dmy' ? 'selected' : ''}>DD/MM/YYYY</option><option value="mdy" ${bulkState.dateOrder === 'mdy' ? 'selected' : ''}>MM/DD/YYYY</option></select></div>` : ''}
+      <button type="button" id="bgTemplate">Download template</button>
+      <span class="endpoint" style="flex:1 1 260px">Headers are the column names below (or the API field names). Lookups match by name, code or id; several in one cell are comma separated.</span>
+    </div>
+    ${fields.filter(f => f.type === 'multiref').map(f => `<datalist id="dl-${f.ref}">${refs[f.ref].map(x => `<option value="${esc(refLabel[f.ref] ? refLabel[f.ref](x) : x.id)}">`).join('')}</datalist>`).join('')}
+    <div id="bgErrors"></div>
+    <div class="sheetwrap"><table class="sheet" style="min-width:${minWidth}px">
+      <thead><tr><th style="width:36px">#</th>${fields.map(f => `<th${f.type === 'number' ? ' class="num"' : ''}>${esc(labelOf(f))}${f.required ? ' <span style="color:var(--bad)">*</span>' : ''}</th>`).join('')}<th style="width:34px"></th></tr></thead>
+      <tbody id="bgRows"></tbody>
+    </table></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:10px 0">
+      <button type="button" id="bgAdd">+ Add row</button><button type="button" id="bgAdd10">+10 rows</button>
+      <button type="button" id="bgClearEmpty">Clear empty rows</button><button type="button" class="danger" id="bgClearAll">Clear grid</button>
+      <div style="flex:1"></div>
+      <label class="endpoint" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="bgBare" style="width:auto" ${st.bare ? 'checked' : ''}> Send as a bare JSON array</label>
+      <span class="endpoint" id="bgCount"></span>
+      <button type="button" class="primary" id="bgSave">Create all</button>
+    </div>
+    <div id="bgOut">${st.result}</div>
+    <details style="margin-top:14px"><summary class="endpoint" style="cursor:pointer">Request body (JSON) that Create all sends</summary><pre id="bgJson"></pre></details>`;
+
+  const tbody = $('#bgRows');
+  const draw = focus => {
+    tbody.innerHTML = st.rows.map(rowHtml).join('');
+    refresh();
+    if (focus) tbody.querySelector(`tr[data-i="${focus.i}"] [data-k="${focus.k}"]`)?.focus();
+  };
+  const build = () => {
+    const payload = [], index = [], problems = {};
+    st.rows.forEach((row, i) => {
+      if (isEmpty(row)) return;
+      const body = {};
+      for (const f of fields) {
+        const v = row.v[f.name];
+        if (f.type === 'bool') body[f.name] = !!v;
+        else if (f.type === 'multiref') {
+          const { ids, missing } = multiResolve(f, v);
+          if (missing.length) (problems[i] ||= {})[f.name] = `${labelOf(f)}: not found — ${missing.join(', ')}`;
+          if (ids.length || f.required) body[f.name] = ids;
+        } else if (v === '' || v === null || v === undefined) continue;
+        else if (f.type === 'ref') body[f.name] = Number(v);
+        else if (f.type === 'number') body[f.name] = isNaN(Number(String(v).replace(/,/g, ''))) ? v : Number(String(v).replace(/,/g, ''));
+        else body[f.name] = v;
+      }
+      payload.push(body); index.push(i);
+    });
+    return { payload, index, problems };
+  };
+  const refresh = () => {
+    const { payload } = build();
+    $('#bgCount').textContent = payload.length ? `${payload.length} row${payload.length === 1 ? '' : 's'} to send` : '';
+    $('#bgJson').textContent = JSON.stringify(st.bare ? payload : { [bulkKey]: payload }, null, 2);
+  };
+
+  tbody.addEventListener('input', ev => {
+    const el = ev.target, tr = el.closest('tr[data-i]'); if (!tr || !el.dataset.k) return;
+    st.rows[+tr.dataset.i].v[el.dataset.k] = el.type === 'checkbox' ? el.checked : el.value;
+    refresh();
+  });
+  tbody.addEventListener('change', ev => {
+    const el = ev.target, tr = el.closest('tr[data-i]'); if (!tr || !el.dataset.k) return;
+    const f = fields.find(x => x.name === el.dataset.k);
+    if (f?.type === 'multiref') { const i = +tr.dataset.i; draw(); tbody.querySelector(`tr[data-i="${i}"] [data-k="${f.name}"]`)?.focus(); }
+  });
+  tbody.addEventListener('click', ev => {
+    const b = ev.target.closest('[data-del]'); if (!b) return;
+    st.rows.splice(+b.closest('tr').dataset.i, 1);
+    if (!st.rows.length) st.rows.push(blank());
+    draw();
+  });
+  tbody.addEventListener('keydown', ev => {
+    if (ev.key !== 'Enter' || ev.target.tagName === 'BUTTON') return;
+    ev.preventDefault();
+    const i = +ev.target.closest('tr[data-i]').dataset.i, k = ev.target.dataset.k;
+    if (i === st.rows.length - 1) st.rows.push(blank());
+    draw({ i: i + 1, k });
+  });
+  tbody.addEventListener('paste', ev => {
+    const text = ev.clipboardData?.getData('text/plain') || '';
+    if (!/[\t\n]/.test(text.trim())) return;
+    ev.preventDefault();
+    const grid = text.replace(/\r/g, '').replace(/\n+$/, '').split('\n').map(l => l.split('\t'));
+    const at = +ev.target.closest('tr[data-i]').dataset.i;
+    importGrid(grid, { at, col: Math.max(0, fields.findIndex(f => f.name === ev.target.dataset.k)) });
+  });
+
+  /* ----- import ----- */
+  const headerKeys = f => [f.name, labelOf(f), f.name.replace(/_ids?$/, ''), f.name.replace(/_ids?$/, '').replace(/_/g, ' '), f.ref, f.ref && f.ref.replace(/-/g, ' ')].filter(Boolean).map(norm);
+  const headerMap = row => {
+    const map = {};
+    row.forEach((h, idx) => { const t = norm(h).replace(/[:*]/g, '').trim(); const f = fields.find(x => !(x.name in map) && headerKeys(x).includes(t)); if (f) map[f.name] = idx; });
+    return Object.keys(map).length >= Math.min(2, fields.length) ? map : null;
+  };
+  const convert = (f, raw, row) => {
+    const s = raw instanceof Date ? raw : String(raw ?? '').trim();
+    if (s === '') return;
+    switch (f.type) {
+      case 'bool': { const t = norm(s); row.v[f.name] = ['1', 'yes', 'y', 'true', 'active', 'x'].includes(t) ? true : ['0', 'no', 'n', 'false', 'inactive'].includes(t) ? false : row.v[f.name]; return; }
+      case 'date': { const d = parseSheetDate(raw, bulkState.dateOrder); if (d) row.v[f.name] = d; else row.errors[f.name] = `${labelOf(f)}: “${s}” is not a date`; return; }
+      case 'number': { const n = parseSheetAmount(raw); row.v[f.name] = typeof n === 'number' && !isNaN(n) ? String(n) : s; return; }
+      case 'select': { const o = f.options.find(o => norm(o.value) === norm(s) || norm(o.label) === norm(s) || norm(o.label).startsWith(norm(s) + ' ')); if (o) row.v[f.name] = o.value; else row.errors[f.name] = `${labelOf(f)}: “${s}” is not an option`; return; }
+      case 'ref': { const id = resolveRef(refs[f.ref], f.ref, s); if (id) row.v[f.name] = String(id); else row.errors[f.name] = `${labelOf(f)}: “${s}” not found or ambiguous`; return; }
+      default: row.v[f.name] = String(s);
+    }
+  };
+  function importGrid(grid, { at = null, col = 0 } = {}) {
+    grid = grid.filter(rw => rw.some(v => String(v ?? '').trim() !== ''));
+    if (!grid.length) return toast('Nothing to import.', true);
+    let map = null, start = 0;
+    for (let i = 0; i < Math.min(grid.length, 10); i++) if ((map = headerMap(grid[i]))) { start = i + 1; break; }
+    if (!map) { map = {}; fields.slice(col).forEach((f, j) => { map[f.name] = j; }); }
+    else col = 0;
+    const merge = at !== null && col > 0 && !start;
+    const made = grid.slice(start).map((src, j) => {
+      const row = merge ? (st.rows[at + j] || blank()) : blank();
+      if (merge) row.errors = {};
+      for (const f of fields) if (f.name in map) convert(f, src[map[f.name]], row);
+      return row;
+    });
+    if (at === null) st.rows = st.rows.filter(rw => !isEmpty(rw)).concat(made);
+    else st.rows.splice(at, merge ? made.length : made.length, ...made);
+    const flagged = made.filter(rw => Object.keys(rw.errors).length).length;
+    toast(`Imported ${made.length} row${made.length === 1 ? '' : 's'}${flagged ? ` · ${flagged} need a look` : ''}`, !!flagged);
+    if (st.rows.length > 500) toast(`The API takes 500 rows per request; you have ${st.rows.length}.`, true);
+    draw();
+  }
+
+  $('#bgFile').onchange = async ev => {
+    const file = ev.target.files[0]; if (!file) return;
+    try {
+      let grid;
+      if (/\.(csv|tsv|txt)$/i.test(file.name)) {
+        const text = await file.text();
+        grid = parseDelimited(text, /\.tsv$/i.test(file.name) || text.split('\n')[0].includes('\t') ? '\t' : ',');
+      } else {
+        const XLSX = await loadSheetJs();
+        const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true });
+        grid = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: '' });
+      }
+      importGrid(grid);
+    } catch (e) { toast('Could not read the file: ' + e.message, true); }
+    ev.target.value = '';
+  };
+  if ($('#bgDateOrder')) $('#bgDateOrder').onchange = e => { bulkState.dateOrder = e.target.value; };
+  $('#bgTemplate').onclick = () => {
+    const q = v => /[",\n]/.test(v) ? `"${String(v).replace(/"/g, '""')}"` : v;
+    const csv = fields.map(f => q(labelOf(f))).join(',') + '\r\n';
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })), download: `${resKey}-bulk-template.csv` });
+    a.click(); URL.revokeObjectURL(a.href);
+  };
+  $('#bgBare').onchange = e => { st.bare = e.target.checked; refresh(); };
+  $('#bgAdd').onclick = () => { st.rows.push(blank()); draw({ i: st.rows.length - 1, k: fields[0].name }); };
+  $('#bgAdd10').onclick = () => { for (let i = 0; i < 10; i++) st.rows.push(blank()); draw(); };
+  $('#bgClearEmpty').onclick = () => { st.rows = st.rows.filter(rw => !isEmpty(rw)); if (!st.rows.length) st.rows.push(blank()); draw(); };
+  $('#bgClearAll').onclick = () => { if (!confirm('Remove all rows from the grid?')) return; st.rows = Array.from({ length: 3 }, blank); st.result = ''; $('#bgOut').innerHTML = ''; draw(); };
+
+  $('#bgSave').onclick = async () => {
+    st.rows.forEach(rw => { rw.errors = {}; });
+    const { payload, index, problems } = build();
+    if (!payload.length) return toast('The grid has no rows to send.', true);
+    if (Object.keys(problems).length) {
+      for (const [i, errs] of Object.entries(problems)) Object.assign(st.rows[i].errors, errs);
+      draw();
+      $('#bgErrors').innerHTML = `<div class="banner bad">Some lookups did not match (marked in red). Fix them before sending.</div>`;
       return;
     }
-    const errs = Object.entries(res.json?.errors || {}).map(([k, v]) => `<li><code>${esc(k)}</code> ${esc([].concat(v).join(' '))}</li>`).join('');
-    $('#bulkOut').innerHTML = `<div class="banner bad">${esc(apiError(res))}${errs ? `<ul style="margin:6px 0 0 18px">${errs}</ul>` : ''}</div>`;
+    $('#bgErrors').innerHTML = '';
+    $('#bgSave').disabled = true;
+    const res = await api('POST', `/finance/${resKey}/create`, { body: st.bare ? payload : { [bulkKey]: payload } });
+    $('#bgSave').disabled = false;
+    if (res.status === 201 || res.status === 200) {
+      const made = [].concat(res.json.data);
+      state.refCache = {};
+      st.result = `<div class="banner" style="background:var(--ok-bg);color:var(--ok)">${esc(res.json.message || 'Saved')}</div>
+        <div style="overflow:auto"><table><thead><tr><th>ID</th>${r.columns.map(c => `<th>${esc(c[0])}</th>`).join('')}</tr></thead><tbody>${
+          made.map(rec => `<tr><td>${rec.id}</td>${r.columns.map(c => `<td class="${c[2] || ''}">${cell(c[1](rec))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+      st.rows = Array.from({ length: 3 }, blank);
+      toast(res.json.message || 'Saved');
+      return renderBulkGrid(resKey);
+    }
+    // "<key>.3.name" -> row 3, Name cell; "<key>.3" -> row 3; anything else -> banner.
+    const general = [];
+    for (const [k, msgs] of Object.entries(res.json?.errors || {})) {
+      const m = k.match(new RegExp(`^${bulkKey}\\.(\\d+)(?:\\.([\\w]+))?`)) || (st.bare ? k.match(/^(\d+)(?:\.(\w+))?/) : null);
+      const text = [].concat(msgs).join(' ');
+      const row = m ? st.rows[index[+m[1]]] : null;
+      if (!row) { general.push(`${k}: ${text}`); continue; }
+      const f = m[2] && fields.some(x => x.name === m[2]) ? m[2] : '_row';
+      row.errors[f] = f === '_row' ? text : `${labelOf(fields.find(x => x.name === f))}: ${text}`;
+    }
+    draw();
+    $('#bgErrors').innerHTML = `<div class="banner bad">${esc(apiError(res))}${res.status === 422 ? ' — nothing was saved.' : ''}${general.length ? `<ul style="margin:6px 0 0 18px">${general.map(g => `<li>${esc(g)}</li>`).join('')}</ul>` : ''}</div>`;
   };
+
+  draw();
 }
 
 /* ---------- bank statement report ---------- */
