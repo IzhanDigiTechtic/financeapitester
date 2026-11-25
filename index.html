@@ -186,6 +186,13 @@ const state = {
 /* ---------- resource definitions ---------- */
 const yesNo = [{ value: '1', label: 'Active' }, { value: '0', label: 'Inactive' }];
 const active = r => r.is_active ? pill('active', 'ok') : pill('inactive');
+// The fixed reports (FmReport::TYPES on the API).
+const reportTypes = [
+  { value: 'daily_bank_report', label: 'Daily Bank Report' },
+  { value: 'daily_recon', label: 'Daily Recon' },
+  { value: 'statement_report', label: 'Statement Report' },
+];
+const reportName = key => reportTypes.find(t => t.value === key)?.label || key;
 
 const refLabel = {
   companies: r => r.name + (r.short_code ? ` (${r.short_code})` : ''),
@@ -194,7 +201,7 @@ const refLabel = {
   'bank-accounts': r => `${r.title} (${r.account_number})`,
   'chart-account-groups': r => r.name,
   'chart-accounts': r => `${r.acc_code} — ${r.name}`,
-  'report-categories': r => r.name,
+  'report-categories': r => `${reportName(r.report_type)} › ${r.name}`,
   reports: r => `#${r.id} ${r.report_type}${r.bank_account ? ' · ' + r.bank_account.title : ''}`,
 };
 
@@ -239,10 +246,12 @@ const RESOURCES = [
       { name: 'region' }, { name: 'note', type: 'textarea' },
       { name: 'is_active', label: 'Active', type: 'bool', default: true },
       { name: 'currency_ids', label: 'Currencies', type: 'multiref', ref: 'currencies', from: 'currencies', hint: 'Transactions can only use these currencies.' },
-      { name: 'company_ids', label: 'Companies', type: 'multiref', ref: 'companies', from: 'companies' },
+      { name: 'company_ids', label: 'Companies', type: 'multiref', ref: 'companies', from: 'companies', required: true, hint: 'At least one.' },
+      { name: 'report_category_ids', label: 'Report categories', type: 'multiref', ref: 'report-categories', from: 'report_categories', hint: 'One per report, e.g. Daily Bank Report › Wallets. Leaving a report out takes the account off it.' },
     ],
     filters: [
       { name: 'search' }, { name: 'bank_id', label: 'Bank', type: 'ref', ref: 'banks' },
+      { name: 'report_category_id', label: 'Report category', type: 'ref', ref: 'report-categories' },
       { name: 'company_id', label: 'Company', type: 'ref', ref: 'companies' },
       { name: 'currency_id', label: 'Currency', type: 'ref', ref: 'currencies' },
       { name: 'is_active', label: 'Status', type: 'select', options: yesNo },
@@ -251,6 +260,7 @@ const RESOURCES = [
       ['Title', r => r.title], ['Number', r => r.account_number], ['Bank', r => r.bank?.name],
       ['Currencies', r => (r.currencies || []).map(c => c.code).join(', ')],
       ['Companies', r => (r.companies || []).map(c => c.name).join(', ')],
+      ['Reports', r => (r.report_categories || []).map(c => `${c.report_name} › ${c.name}`).join(', ')],
       ['Opening', r => `${r.opening_balance ?? ''} ${r.opening_date ? '@ ' + r.opening_date : ''}`],
       ['Status', active],
     ] },
@@ -317,6 +327,7 @@ const RESOURCES = [
       { label: 'Post', when: r => r.status === 'draft', run: r => postTransaction(r) },
       { label: 'Reverse', when: r => r.status === 'posted', run: r => reverseTransaction(r) },
     ] },
+  { group: 'Books', key: 'transactions-bulk', label: 'Bulk Transactions', view: () => renderBulkTransactions() },
   { group: 'Books', key: 'posting-batches', label: 'Posting Batches', readOnly: true,
     note: 'Batches are opened automatically: the first transaction of a business day creates one per bank account. A business day runs 10:00 AM to 10:00 AM PKT; at 10:00 AM the batch closes and the next one starts.',
     fields: [],
@@ -333,20 +344,27 @@ const RESOURCES = [
     ],
     extraActions: [{ label: 'Entries', run: r => showBatchEntries(r) }] },
   { group: 'Reports', key: 'report-categories', label: 'Report Categories',
-    fields: [{ name: 'name', required: true }, { name: 'is_active', label: 'Active', type: 'bool', default: true }],
-    filters: [{ name: 'search' }, { name: 'is_active', label: 'Status', type: 'select', options: yesNo }],
-    columns: [['Name', r => r.name], ['Reports', r => r.reports_count, 'num'], ['Status', active]] },
+    fields: [
+      { name: 'report_type', label: 'Report', type: 'select', options: reportTypes, required: true },
+      { name: 'name', required: true },
+      { name: 'sort_order', label: 'Order', type: 'number', step: '1', hint: 'Section order on the report.' },
+      { name: 'is_active', label: 'Active', type: 'bool', default: true },
+    ],
+    filters: [{ name: 'search' }, { name: 'report_type', label: 'Report', type: 'select', options: reportTypes }, { name: 'is_active', label: 'Status', type: 'select', options: yesNo }],
+    columns: [['Report', r => r.report_name], ['Order', r => r.sort_order, 'num'], ['Name', r => r.name], ['Accounts', r => r.reports_count, 'num'], ['Status', active]] },
   { group: 'Reports', key: 'reports', label: 'Reports',
     fields: [
       { name: 'bank_account_id', label: 'Bank account', type: 'ref', ref: 'bank-accounts', required: true },
-      { name: 'report_type', required: true, hint: 'Free text for now, e.g. daily_summary.' },
+      { name: 'report_type', label: 'Report', type: 'select', options: reportTypes, required: true, hint: 'Usually set from the bank account form instead.' },
       { name: 'sort_order', type: 'number', step: '1' }, { name: 'remarks', type: 'textarea' },
       { name: 'is_active', label: 'Active', type: 'bool', default: true },
       { name: 'category_ids', label: 'Categories', type: 'multiref', ref: 'report-categories', from: 'categories' },
     ],
-    filters: [{ name: 'search' }, { name: 'bank_account_id', label: 'Bank account', type: 'ref', ref: 'bank-accounts' }, { name: 'category_id', label: 'Category', type: 'ref', ref: 'report-categories' }, { name: 'report_type' }],
+    filters: [{ name: 'search' }, { name: 'bank_account_id', label: 'Bank account', type: 'ref', ref: 'bank-accounts' }, { name: 'category_id', label: 'Category', type: 'ref', ref: 'report-categories' }, { name: 'report_type', label: 'Report', type: 'select', options: reportTypes }],
     columns: [['#', r => r.sort_order, 'num'], ['Type', r => r.report_type], ['Bank account', r => r.bank_account?.title], ['Categories', r => (r.categories || []).map(c => c.name).join(', ')], ['Status', active]] },
   { group: 'Reports', key: 'daily-bank-summary', label: 'Daily Bank Summary', view: () => renderDailySummary() },
+  { group: 'Reports', key: 'daily-recon', label: 'Daily Recon', view: () => renderDailyRecon() },
+  { group: 'Reports', key: 'statements', label: 'Bank Statement', view: () => renderStatements() },
   { group: 'Reports', key: 'report-bank-categories', label: 'Report ↔ Category',
     fields: [
       { name: 'report_id', label: 'Report', type: 'ref', ref: 'reports', required: true },
@@ -477,7 +495,7 @@ function render() {
   if (!state.token) return renderLogin();
   const key = location.hash.slice(1) || RESOURCES[0].key;
   const res = RESOURCES.find(r => r.key === key) || RESOURCES[0];
-  if (state.current?.key !== res.key) { state.page = 1; state.filters = {}; }
+  if (state.current?.key !== res.key) { state.page = 1; state.filters = state.nextFilters || {}; state.nextFilters = null; }
   state.current = res;
   renderNav();
   res.view ? res.view() : renderList();
@@ -494,16 +512,223 @@ function money(v) {
 const moneyTd = v => `<td class="num${v < 0 ? ' neg' : ''}">${esc(money(v))}</td>`;
 const niceDate = d => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '';
 
-async function renderDailySummary() {
-  const date = state.filters.report_date || today();
-  const type = state.filters.report_type || '';
+/* ---------- bulk transactions ---------- */
+async function renderBulkTransactions() {
+  const [accounts, charts, currencies] = await Promise.all([loadRef('bank-accounts'), loadRef('chart-accounts'), loadRef('currencies')]);
+  const row = (amount, type) => ({
+    bank_account_id: accounts[0]?.id ?? 1, chart_account_id: charts[0]?.id ?? 1,
+    currency_id: accounts[0]?.currencies?.[0]?.id ?? currencies[0]?.id ?? 1,
+    transaction_date: today(), type, amount, description: '', reference: '',
+  });
+  const sample = state.bulkDraft || JSON.stringify({ transactions: [row(100, 'credit'), row(25.5, 'debit')] }, null, 2);
+
   $('#main').innerHTML = `
     <div class="titlebar">
-      <div><h2>Daily Bank Summary</h2><div class="endpoint">GET <code>/finance/daily-bank-summary</code> · from view <code>fm_daily_bank_summary_view</code></div></div>
+      <div><h2>Bulk Transactions</h2><div class="endpoint">POST <code>/finance/transactions/create</code> with <code>{"transactions": [...]}</code> or a bare array · all saved or none</div></div>
+    </div>
+    <form id="bulkForm">
+      <div class="field"><label>Body (JSON)</label><textarea name="body" spellcheck="false" style="min-height:320px;font-family:ui-monospace,monospace;font-size:12px">${esc(sample)}</textarea>
+        <div class="hint">Same fields as a single transaction. Up to 500 per request. Ids are prefilled from the first bank account, chart account and currency.</div></div>
+      <div style="display:flex;gap:6px;margin:8px 0"><button class="primary" type="submit">Create all</button><button type="button" id="bulkReset">Reset sample</button></div>
+    </form>
+    <div id="bulkOut"></div>`;
+
+  $('#bulkReset').onclick = () => { state.bulkDraft = null; renderBulkTransactions(); };
+  $('#bulkForm').onsubmit = async ev => {
+    ev.preventDefault();
+    const text = ev.target.body.value;
+    state.bulkDraft = text;
+    let body;
+    try { body = JSON.parse(text); } catch (e) { $('#bulkOut').innerHTML = `<div class="banner bad">Not valid JSON: ${esc(e.message)}</div>`; return; }
+
+    const res = await api('POST', '/finance/transactions/create', { body });
+    if (res.status === 201) {
+      const rows = [].concat(res.json.data);
+      toast(res.json.message);
+      $('#bulkOut').innerHTML = `<div class="banner ok">${esc(res.json.message)}</div>
+        <div class="tablewrap"><table><thead><tr><th>ID</th><th>Date</th><th>Bank account</th><th>Type</th><th class="num">Amount</th><th>Batch</th></tr></thead><tbody>${
+          rows.map(t => `<tr><td>${t.id}</td><td>${esc(t.transaction_date)}</td><td>${esc(t.bank_account?.title ?? '')}</td><td>${esc(t.type)}</td><td class="num">${esc(t.amount)} ${esc(t.currency?.code ?? '')}</td><td>${t.posting_batch ? '#' + t.posting_batch.id : ''}</td></tr>`).join('')
+        }</tbody></table></div>`;
+      return;
+    }
+    const errs = Object.entries(res.json?.errors || {}).map(([k, v]) => `<li><code>${esc(k)}</code> ${esc([].concat(v).join(' '))}</li>`).join('');
+    $('#bulkOut').innerHTML = `<div class="banner bad">${esc(apiError(res))}${errs ? `<ul style="margin:6px 0 0 18px">${errs}</ul>` : ''}</div>`;
+  };
+}
+
+/* ---------- bank statement report ---------- */
+async function renderStatements() {
+  const f = Object.assign({ from_date: today().slice(0, 8) + '01', to_date: today() }, state.filters);
+  const [companies, accounts, charts] = await Promise.all([loadRef('companies'), loadRef('bank-accounts'), loadRef('chart-accounts')]);
+  const accountsShown = f.company_id ? accounts.filter(a => (a.companies || []).some(c => String(c.id) === String(f.company_id))) : accounts;
+  const picked = accounts.find(a => String(a.id) === String(f.bank_account_id));
+  const opt = (rows, val, label, sel) => rows.map(r => `<option value="${esc(val(r))}" ${String(val(r)) === String(sel ?? '') ? 'selected' : ''}>${esc(label(r))}</option>`).join('');
+  const byGroup = Object.entries(charts.reduce((m, c) => ((m[c.group?.name || 'No group'] ||= []).push(c), m), {}));
+
+  $('#main').innerHTML = `
+    <div class="titlebar"><div><h2>Bank Statement Report</h2><div class="endpoint">GET <code>/finance/statements</code> (all banks / company) · GET <code>/finance/statements/{bank_account_id}</code> (one account)</div></div></div>
+    <form class="filters" id="stForm">
+      <div class="f"><label>Company</label><select name="company_id"><option value="">All companies</option>${opt(companies, r => r.id, refLabel.companies, f.company_id)}</select></div>
+      <div class="f"><label>Bank account</label><select name="bank_account_id"><option value="">All banks (company summary)</option>${opt(accountsShown, r => r.id, refLabel['bank-accounts'], f.bank_account_id)}</select></div>
+      ${picked && (picked.currencies || []).length > 1 ? `<div class="f"><label>Currency</label><select name="currency_id">${opt(picked.currencies, r => r.id, r => r.code, f.currency_id)}</select></div>` : ''}
+      <div class="f"><label>From date</label><input type="date" name="from_date" value="${esc(f.from_date)}"></div>
+      <div class="f"><label>To date</label><input type="date" name="to_date" value="${esc(f.to_date)}"></div>
+      ${picked ? `
+      <div class="f"><label>Type</label><select name="type"><option value="">All</option>${opt([{ v: 'debit', l: 'Debit (Out)' }, { v: 'credit', l: 'Credit (In)' }], r => r.v, r => r.l, f.type)}</select></div>
+      <div class="f"><label>Account</label><select name="chart_account_id"><option value="">All accounts</option>${byGroup.map(([g, rows]) => `<optgroup label="${esc(g)}">${opt(rows, r => r.id, refLabel['chart-accounts'], f.chart_account_id)}</optgroup>`).join('')}</select></div>
+      <div class="f"><label>Status</label><select name="status"><option value="">Draft &amp; posted</option>${opt([{ v: 'draft', l: 'Drafts only' }, { v: 'posted', l: 'Posted only' }], r => r.v, r => r.l, f.status)}</select></div>` : ''}
+      <div class="f" style="flex:0 0 auto;min-width:0"><label>&nbsp;</label><div style="display:flex;gap:6px"><button class="primary" type="submit">Run Report</button><button type="button" id="stReset">Reset</button>${picked ? '<button type="button" id="stExport">Export CSV</button>' : ''}</div></div>
+    </form>
+    <div id="stBody"><div class="empty">Loading…</div></div>`;
+
+  const form = $('#stForm');
+  const read = () => Object.fromEntries([...new FormData(form).entries()].filter(([, v]) => v !== ''));
+  form.onsubmit = ev => { ev.preventDefault(); state.filters = read(); renderStatements(); };
+  // Changing company or bank re-renders, so the bank list and extra filters follow.
+  form.company_id.onchange = () => { state.filters = { ...read(), bank_account_id: undefined, currency_id: undefined }; renderStatements(); };
+  form.bank_account_id.onchange = () => { state.filters = { ...read(), currency_id: undefined }; renderStatements(); };
+  $('#stReset').onclick = () => { state.filters = {}; renderStatements(); };
+  if ($('#stExport')) $('#stExport').onclick = async () => {
+    const q = new URLSearchParams(Object.entries(read()).filter(([k]) => k !== 'company_id' && k !== 'bank_account_id')).toString();
+    const res = await fetch(state.base.replace(/\/+$/, '') + `/finance/statements/${f.bank_account_id}/export?${q}`, { headers: { Authorization: 'Bearer ' + state.token, Accept: 'text/csv' } });
+    if (!res.ok) return toast('Export failed (' + res.status + ')', true);
+    const name = (res.headers.get('content-disposition') || '').match(/filename="?([^"]+)"?/)?.[1] || 'bank-statement.csv';
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(await res.blob()), download: name });
+    a.click(); URL.revokeObjectURL(a.href);
+  };
+
+  const query = { ...f }; delete query.company_id;
+  const res = picked
+    ? await api('GET', `/finance/statements/${f.bank_account_id}`, { query: { ...query, bank_account_id: undefined } })
+    : await api('GET', '/finance/statements', { query: { ...f, type: undefined, chart_account_id: undefined, status: undefined, currency_id: undefined } });
+  if (state.current?.key !== 'statements') return;
+  if (res.status !== 200) { $('#stBody').innerHTML = `<div class="banner bad">${esc(apiError(res))}</div>`; return; }
+  const d = res.json.data;
+  const num = (v, cls = '') => `<td class="num ${cls}${v < 0 ? ' neg' : ''}">${esc(money(v))}</td>`;
+  const period = `<p class="endpoint">Period: <b>${esc(niceDate(d.from))}</b> → <b>${esc(niceDate(d.to))}</b></p>`;
+
+  if (!picked) {
+    const company = companies.find(c => String(c.id) === String(f.company_id));
+    $('#stBody').innerHTML = `<h3>${esc(company ? company.name : 'All companies')} — All Banks</h3>${period}
+      <div style="overflow:auto"><table><thead><tr><th>Bank</th><th>Account #</th><th>Currency</th><th class="num">Opening Balance</th><th class="num">Credit (In)</th><th class="num">Debit (Out)</th><th class="num">Net Movement</th><th class="num">Closing Balance</th><th class="num">Transactions</th><th></th></tr></thead>
+      <tbody>${d.lines.length ? d.lines.map(l => `<tr><td>${esc(l.title)}${l.is_active ? '' : ' ' + pill('inactive').html}<div class="endpoint">${esc(l.bank || '')}</div></td><td>${esc(l.account_number || '-')}</td><td>${esc(l.currency)}</td>${num(l.opening_balance)}${num(l.credit_total)}${num(-l.debit_total)}${num(l.net_movement)}<td class="num"><b>${esc(money(l.closing_balance))}</b></td><td class="num">${l.transaction_count}</td>
+        <td><button type="button" data-acc="${l.bank_account_id}" data-cur="${l.currency_id}">Statement</button></td></tr>`).join('') : '<tr><td colspan="10" class="empty">No bank accounts.</td></tr>'}</tbody>
+      <tfoot>${d.totals_by_currency.map(t => `<tr style="font-weight:600"><td colspan="2">Total — ${esc(t.currency)} (${t.bank_count} bank${t.bank_count === 1 ? '' : 's'})</td><td>${esc(t.currency)}</td>${num(t.opening_balance)}${num(t.credit_total)}${num(-t.debit_total)}${num(t.net_movement)}${num(t.closing_balance)}<td class="num">${t.transaction_count}</td><td></td></tr>`).join('')}</tfoot></table></div>`;
+    $('#stBody').querySelectorAll('[data-acc]').forEach(b => b.onclick = () => { state.filters = { ...f, bank_account_id: b.dataset.acc, currency_id: b.dataset.cur }; renderStatements(); });
+    return;
+  }
+
+  const cur = d.currency, A = d.account;
+  const card = (title, value, sub = '') => `<div style="flex:1 1 180px;border:1px solid var(--line);border-radius:6px;padding:10px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--muted)">${title}</div><div style="font-size:18px;font-weight:700">${esc(cur)} ${esc(money(value))}</div>${sub ? `<div class="endpoint">${sub}</div>` : ''}</div>`;
+  const breakdown = d.breakdown.map(s => `
+    <tr style="background:var(--code);font-weight:600"><td colspan="6">${esc(s.label)} <span class="endpoint">— ${esc(s.type_label || '')}</span></td></tr>
+    ${s.groups.map(g => `<tr><td colspan="6" style="padding-left:12px;font-weight:600">${esc(g.group)}</td></tr>
+      ${g.accounts.map(a => `<tr><td class="endpoint">${esc(a.code)}</td><td style="padding-left:24px">${esc(a.name)}</td><td class="num">${a.transaction_count}</td>${num(a.credit_total)}${num(a.debit_total)}${num(a.net_total)}</tr>`).join('')}
+      <tr style="font-weight:600"><td></td><td class="num">${esc(g.group)} subtotal</td><td></td>${num(g.credit_total)}${num(g.debit_total)}${num(g.net_total)}</tr>`).join('')}
+    <tr style="background:var(--code);font-weight:600"><td></td><td class="num">${esc(s.type_label || s.label)} total</td><td></td>${num(s.credit_total)}${num(s.debit_total)}${num(s.net_total)}</tr>`).join('');
+
+  $('#stBody').innerHTML = `
+    <h3>${esc(A.title)} <span class="endpoint">— ${esc(A.companies.join(', ') || 'no company')} · ${esc(A.bank || '')}</span></h3>
+    <p class="endpoint">Account # ${esc(A.account_number || '-')} · Currency ${esc(cur)} · Opening balance ${esc(money(A.opening_balance))}${A.opening_date ? ' on ' + esc(niceDate(A.opening_date)) : ''}${A.opening_currency_id !== d.currency_id ? ' (belongs to the first currency, so this one starts at 0)' : ''} · ${A.is_active ? pill('active', 'ok').html : pill('inactive').html}</p>
+    ${period}
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0">
+      ${card('Opening Balance', d.opening_balance, 'as at ' + esc(niceDate(d.from)))}${card('Total Credit (In)', d.total_credit)}${card('Total Debit (Out)', d.total_debit)}${card('Closing Balance', d.closing_balance, 'as at ' + esc(niceDate(d.to)))}
+    </div>
+    <div class="banner"><b>Reconciliation:</b> Opening ${esc(cur)} ${esc(money(d.opening_balance))} + Credit ${esc(money(d.total_credit))} − Debit ${esc(money(d.total_debit))} = <b>Closing ${esc(cur)} ${esc(money(d.closing_balance))}</b> (${d.transaction_count} transactions in period${d.listed_count !== d.transaction_count ? `, ${d.listed_count} listed by the filters` : ''})</div>
+    ${d.draft_count ? `<div class="banner bad"><b>${d.draft_count} of these entries ${d.draft_count === 1 ? 'is' : 'are'} still draft${d.draft_count === 1 ? '' : 's'}</b> and not reviewed and posted. They are in the balances above because the money has moved, but they are not final. Excluding them, the closing balance would be <b>${esc(cur)} ${esc(money(d.posted_closing_balance))}</b>.</div>` : ''}
+    <div style="overflow:auto"><table><thead><tr><th>Date</th><th>Description</th><th>Account</th><th>Reference</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Balance</th></tr></thead><tbody>
+      <tr style="background:var(--code);font-weight:600"><td>${esc(niceDate(d.from))}</td><td colspan="5">Opening Balance</td>${num(d.opening_balance)}</tr>
+      ${d.rows.map(r => `<tr${r.status === 'draft' ? ' style="background:var(--bad-bg)"' : ''}><td>${esc(niceDate(r.transaction_date))}</td><td>${esc(r.description || '')} ${r.status === 'draft' ? pill('draft', 'warn').html : pill('posted', 'ok').html}</td><td>${r.chart_account_code ? `<span class="endpoint">${esc(r.chart_account_code)}</span> ` : ''}${esc(r.chart_account_name || '')}</td><td>${esc(r.reference || '-')}</td><td class="num">${r.debit === null ? '' : esc(money(r.debit))}</td><td class="num">${r.credit === null ? '' : esc(money(r.credit))}</td>${num(r.balance)}</tr>`).join('')}
+    </tbody><tfoot>
+      <tr style="font-weight:600"><td colspan="4" class="num">Totals</td><td class="num">${esc(money(d.total_debit))}</td><td class="num">${esc(money(d.total_credit))}</td><td></td></tr>
+      <tr style="font-weight:600"><td colspan="6">Closing Balance</td>${num(d.closing_balance)}</tr>
+    </tfoot></table></div>
+
+    <h3 style="margin-top:18px">Summary Recon</h3>
+    <table style="max-width:560px"><tbody>
+      <tr style="font-weight:600"><td>Opening Balance (A)</td>${num(d.recon.opening_balance)}</tr>
+      ${d.recon.sections.map(s => `<tr><td>${esc(s.label)}</td>${num(s.net_total)}</tr>`).join('')}
+      <tr style="font-weight:600;border-top:2px solid var(--line)"><td>(B)</td>${num(d.recon.net_total)}</tr>
+      <tr style="font-weight:600"><td>(A) + (B)</td>${num(d.recon.computed_closing)}</tr>
+      <tr style="font-weight:600"><td>Reported Closing Balance</td>${num(d.recon.reported_closing)}</tr>
+      <tr style="font-weight:600;background:${Math.abs(d.recon.difference) < 0.005 ? 'var(--ok-bg, #e7f6ec)' : 'var(--bad-bg)'}"><td>Difference</td>${num(d.recon.difference)}</tr>
+    </tbody></table>
+
+    <h3 style="margin-top:18px">Breakdown by Chart of Accounts</h3>
+    ${d.breakdown.length ? `<div style="overflow:auto"><table><thead><tr><th>Code</th><th>Account</th><th class="num">Transactions</th><th class="num">Credit (In)</th><th class="num">Debit (Out)</th><th class="num">Net</th></tr></thead><tbody>${breakdown}</tbody>
+      <tfoot><tr style="font-weight:700"><td colspan="3">Net movement</td>${num(d.breakdown_total.credit_total)}${num(d.breakdown_total.debit_total)}${num(d.breakdown_total.net_total)}</tr></tfoot></table></div>` : '<div class="empty">No movement in this period.</div>'}`;
+}
+
+/* ---------- daily recon ---------- */
+async function renderDailyRecon() {
+  const date = state.filters.report_date || today();
+  $('#main').innerHTML = `
+    <div class="titlebar">
+      <div><h2>Recon for Daily Bank Balances</h2><div class="endpoint">GET <code>/finance/daily-recon</code> · opening and closing from the Daily Bank Report, movement by chart account group</div></div>
+      <div style="display:flex;gap:6px"><button type="button" id="drSummary">Summary for this date</button><button type="button" id="drExport">Export CSV</button></div>
+    </div>
+    <form class="filters" id="drForm">
+      <div class="f"><label>Report date</label><input type="date" name="report_date" value="${esc(date)}"></div>
+      <div class="f" style="flex:0 0 auto;min-width:0"><label>&nbsp;</label><div style="display:flex;gap:6px"><button class="primary" type="submit">Run</button><button type="button" id="drToday">Today</button></div></div>
+    </form>
+    <div id="drBody"><div class="empty">Loading…</div></div>`;
+  $('#drForm').onsubmit = ev => { ev.preventDefault(); state.filters = Object.fromEntries(new FormData(ev.target).entries()); renderDailyRecon(); };
+  $('#drToday').onclick = () => { state.filters = {}; renderDailyRecon(); };
+  $('#drSummary').onclick = () => { state.nextFilters = { report_date: date }; location.hash = 'daily-bank-summary'; };
+  $('#drExport').onclick = async () => {
+    // A plain link cannot send the bearer token, so fetch the file and save it.
+    const url = state.base.replace(/\/+$/, '') + '/finance/daily-recon/export?report_date=' + encodeURIComponent(date);
+    const res = await fetch(url, { headers: { Authorization: 'Bearer ' + state.token, Accept: 'text/csv' } });
+    if (!res.ok) return toast('Export failed (' + res.status + ')', true);
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(await res.blob()), download: `daily-recon-${date}.csv` });
+    a.click(); URL.revokeObjectURL(a.href);
+  };
+
+  const res = await api('GET', '/finance/daily-recon', { query: { report_date: date } });
+  if (state.current?.key !== 'daily-recon') return;
+  if (res.status !== 200) { $('#drBody').innerHTML = `<div class="banner bad">${esc(apiError(res))}</div>`; return; }
+
+  const d = res.json.data, base = d.base_currency;
+  const amt = v => `<td class="num${v < 0 ? ' neg' : ''}">${v === 0 ? '-' : esc(money(v))}</td>`;
+  const gap = '<tr><td colspan="2" style="padding:3px;background:var(--code)"></td></tr>';
+  const sections = d.sections.map(s => `
+    <tr><td colspan="2"><b style="color:var(--accent, #2563eb)">${esc(s.label)}</b>${s.has_missing_rate ? ' <span class="pill">missing rate</span>' : ''}</td></tr>
+    ${s.accounts.map(a => `<tr><td style="padding-left:24px">${a.code ? `<span class="endpoint">${esc(a.code)}</span> ` : ''}${esc(a.name)}${
+      a.slices.filter(x => x.currency !== base).map(x => ` <span class="endpoint">· ${esc(money(x.net_native))} ${esc(x.currency)}</span>`).join('')}</td>${amt(a.net_total)}</tr>`).join('')}
+    <tr style="font-weight:600;border-top:2px solid var(--line)"><td>(${esc(s.letter)})</td>${amt(s.net_total)}</tr>${gap}`).join('');
+
+  let warn = '';
+  if (d.warnings?.missing_rates) warn += `<div class="banner bad">No exchange rate on or before this date for <b>${esc(d.warnings.missing_rates.join(', '))}</b>, so those amounts are left out.</div>`;
+  if (d.warnings?.draft_count) warn += `<div class="banner">${d.warnings.draft_count} draft entr${d.warnings.draft_count === 1 ? 'y is' : 'ies are'} included on this date and not posted yet.</div>`;
+
+  $('#drBody').innerHTML = `${warn}
+    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+      <div style="flex:1 1 420px;min-width:0">
+        <table><tbody>
+          <tr style="font-weight:600"><td>Opening Balance (A)</td>${amt(d.opening_balance)}</tr>${gap}
+          ${sections}
+          <tr style="font-weight:600"><td>${esc(d.computed_label)}</td>${amt(d.computed_closing)}</tr>
+          <tr style="font-weight:600"><td>Reported Closing Balance</td>${amt(d.reported_closing)}</tr>
+          <tr style="font-weight:600;background:${d.is_balanced ? 'var(--ok-bg, #e7f6ec)' : 'var(--bad-bg)'}"><td>Difference</td>${amt(d.difference)}</tr>
+        </tbody></table>
+        <p class="endpoint">(A) is the total of every Daily Bank Report account's closing balance on ${esc(niceDate(d.previous_date))}. The lettered sections are ${esc(niceDate(d.report_date))}'s movement, grouped by the chart account group each entry was coded to. The reported closing balance is the same grand total the daily summary prints.</p>
+      </div>
+      <div style="flex:0 1 300px;border:1px solid var(--line);border-left:4px solid ${d.is_balanced ? '#16a34a' : 'var(--bad)'};border-radius:6px;padding:12px">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:${d.is_balanced ? '#16a34a' : 'var(--bad)'}">${d.is_balanced ? 'Balanced' : 'Out of balance'}</div>
+        <div style="font-size:20px;font-weight:700">${esc(base)} ${esc(money(Math.abs(d.difference)))}</div>
+        <p class="endpoint" style="margin:6px 0 0">${d.is_balanced ? 'Opening balance plus the analysed movement equals the closing balance.' : 'Opening balance plus the analysed movement does not equal the closing balance.'}</p>
+      </div>
+    </div>`;
+}
+
+async function renderDailySummary() {
+  const date = state.filters.report_date || today();
+  $('#main').innerHTML = `
+    <div class="titlebar">
+      <div><h2>Daily Bank Report</h2><div class="endpoint">GET <code>/finance/daily-bank-summary</code> · from view <code>fm_daily_bank_summary_view</code> · accounts placed on the Daily Bank Report only</div></div>
     </div>
     <form class="filters" id="dsForm">
       <div class="f"><label>Report date</label><input type="date" name="report_date" value="${esc(date)}"></div>
-      <div class="f"><label>Report type</label><input name="report_type" value="${esc(type)}" placeholder="All types"></div>
       <div class="f" style="flex:0 0 auto;min-width:0"><label>&nbsp;</label><div style="display:flex;gap:6px"><button class="primary" type="submit">Run</button><button type="button" id="dsToday">Today</button></div></div>
     </form>
     <div id="dsBody"><div class="empty">Loading…</div></div>`;
@@ -511,7 +736,6 @@ async function renderDailySummary() {
   $('#dsToday').onclick = () => { state.filters = {}; renderDailySummary(); };
 
   const query = { report_date: date };
-  if (type) query.report_type = type;
   const res = await api('GET', '/finance/daily-bank-summary', { query });
   if (state.current?.key !== 'daily-bank-summary') return;
   if (res.status !== 200) {
