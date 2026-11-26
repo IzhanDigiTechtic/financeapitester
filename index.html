@@ -942,7 +942,7 @@ async function renderBulkTransactions() {
   /* ----- current balance and recent entries ----- */
   if (!sheet.ctx) {
     const from = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
-    const res = await api('GET', `/finance/statements/${acc.id}`, { query: { currency_id: sheet.currencyId, from_date: acc.opening_date && acc.opening_date > from ? acc.opening_date : from, to_date: '2099-12-31' } });
+    const res = await api('GET', `/finance/statements/${acc.id}/show`, { query: { currency_id: sheet.currencyId, from_date: acc.opening_date && acc.opening_date > from ? acc.opening_date : from, to_date: '2099-12-31' } });
     if (state.current?.key !== 'transactions-bulk' || String(sheet.accountId) !== String(acc.id)) return;
     sheet.ctx = res.status === 200 ? res.json.data : { closing_balance: 0, rows: [], failed: apiError(res) };
   }
@@ -1284,7 +1284,7 @@ async function renderStatements() {
   const byGroup = Object.entries(charts.reduce((m, c) => ((m[c.group?.name || 'No group'] ||= []).push(c), m), {}));
 
   $('#main').innerHTML = `
-    <div class="titlebar"><div><h2>Bank Statement Report</h2><div class="endpoint">GET <code>/finance/statements</code> (all banks / company) · GET <code>/finance/statements/{bank_account_id}</code> (one account)</div></div></div>
+    <div class="titlebar"><div><h2>Bank Statement Report</h2><div class="endpoint">GET <code>/finance/statements</code> (all banks / company) · GET <code>/finance/statements/{bank_account_id}/show</code> (one account)</div></div></div>
     <form class="filters" id="stForm">
       <div class="f"><label>Company</label><select name="company_id"><option value="">All companies</option>${opt(companies, r => r.id, refLabel.companies, f.company_id)}</select></div>
       <div class="f"><label>Bank account</label><select name="bank_account_id"><option value="">All banks (company summary)</option>${opt(accountsShown, r => r.id, refLabel['bank-accounts'], f.bank_account_id)}</select></div>
@@ -1317,7 +1317,7 @@ async function renderStatements() {
 
   const query = { ...f }; delete query.company_id;
   const res = picked
-    ? await api('GET', `/finance/statements/${f.bank_account_id}`, { query: { ...query, bank_account_id: undefined } })
+    ? await api('GET', `/finance/statements/${f.bank_account_id}/show`, { query: { ...query, bank_account_id: undefined } })
     : await api('GET', '/finance/statements', { query: { ...f, type: undefined, chart_account_id: undefined, status: undefined, currency_id: undefined } });
   if (state.current?.key !== 'statements') return;
   if (res.status !== 200) { $('#stBody').innerHTML = `<div class="banner bad">${esc(apiError(res))}</div>`; return; }
