@@ -203,6 +203,55 @@ const state = {
 
 /* ---------- resource definitions ---------- */
 const yesNo = [{ value: '1', label: 'Active' }, { value: '0', label: 'Inactive' }];
+const quoteDirections = [
+  { value: 'per_usd', label: 'per USD (units per 1 base, e.g. 279.50 PKR)' },
+  { value: 'to_usd', label: 'to USD (base per 1 unit, e.g. 0.0035778 USD)' },
+];
+// "279.5000000000" -> "279.5"
+const trimNum = v => String(v).includes('.') ? String(v).replace(/0+$/, '').replace(/\.$/, '') : String(v);
+const fmtRate = n => trimNum(n >= 1 ? n.toFixed(4) : n.toPrecision(6));
+// {"exchange_rate.quoted_rate": 2} -> {exchange_rate: {quoted_rate: 2}}. Fields left
+// empty are never in the body, so a group with nothing filled in is not sent at all.
+function nestDotted(body) {
+  const out = {};
+  for (const [k, v] of Object.entries(body)) {
+    const dot = k.indexOf('.');
+    if (dot < 0) { out[k] = v; continue; }
+    (out[k.slice(0, dot)] ||= {})[k.slice(dot + 1)] = v;
+  }
+  return out;
+}
+const baseNote = '<span style="color:var(--bad)">No base currency is marked. Mark one under Currencies (Base currency) first.</span>';
+// "Converts to: 1 USD = 279.5 PKR · 1 PKR = 0.00357782 USD". Plain arithmetic, no API call.
+function convertsText(code, baseCode, dir, rate) {
+  if (!rate || rate <= 0 || !dir) return 'Converts to: enter a direction and a rate above 0.';
+  const perBase = dir === 'per_usd' ? rate : 1 / rate;
+  const toBase = dir === 'per_usd' ? 1 / rate : rate;
+  const a = `1 ${baseCode} = ${fmtRate(perBase)} ${code}`, b = `1 ${code} = ${fmtRate(toBase)} ${baseCode}`;
+  return `Converts to: <b>${esc(dir === 'per_usd' ? `${a} · ${b}` : `${b} · ${a}`)}</b>`;
+}
+// The exchange-rate form's line. The base currency is the one marked is_base;
+// "usd" in the API field names means the base.
+function rateConvertsTo(form) {
+  const currencies = state.refCache.currencies || [];
+  const picked = currencies.find(c => String(c.id) === form.elements.currency_id.value);
+  const base = currencies.find(c => c.is_base);
+  const baseCode = base?.code || 'base';
+  if (!base) return baseNote;
+  if (picked?.is_base) return `<span style="color:var(--bad)">${esc(baseCode)} is the base currency and always converts at 1.0, so it needs no exchange rate. Pick another currency (or, for a saved rate, delete it).</span>`;
+  return convertsText(picked?.code || 'units', baseCode, form.elements.quote_direction.value, Number(form.elements.quoted_rate.value));
+}
+// The currency form's first exchange rate (create only; the fields are absent on edit).
+function currencyRateNote(form) {
+  const el = name => form.elements['exchange_rate.' + name];
+  if (!el('quoted_rate')) return '';
+  const dir = el('quote_direction').value, rate = el('quoted_rate').value;
+  if (!dir && !rate && !el('effective_date').value) return 'No exchange rate is added. Fill in the rate fields to add the first one.';
+  if (form.elements.is_base.checked) return '<span style="color:var(--bad)">The base currency has no exchange rate. Clear the rate fields, or untick Base currency.</span>';
+  const base = (state.refCache.currencies || []).find(c => c.is_base);
+  if (!base) return baseNote;
+  return convertsText(form.elements.code.value.trim().toUpperCase() || 'units', base.code, dir, Number(rate));
+}
 const active = r => r.is_active ? pill('active', 'ok') : pill('inactive');
 // The fixed reports (FmReport::TYPES on the API).
 const reportTypes = [
@@ -229,20 +278,43 @@ const RESOURCES = [
       { name: 'title', required: true },
       { name: 'code', required: true, hint: 'Saved in upper case. Unique, even across deleted currencies.' },
       { name: 'symbol' },
+      { name: 'is_base', label: 'Base currency', type: 'bool',
+        hint: 'Exactly one. Rates are entered against it, it always converts at 1.0, and reports total in it. Can only move while no exchange rates exist.' },
+      // Optional first exchange rate, sent as exchange_rate: {...}. Create only; later rates go under Exchange Rates.
+      { name: 'exchange_rate.quote_direction', label: 'Rate: quote direction', type: 'select', options: quoteDirections, createOnly: true,
+        hint: 'Optional first exchange rate. Leave all rate fields empty to add none.' },
+      { name: 'exchange_rate.quoted_rate', label: 'Rate: rate', type: 'number', step: 'any', createOnly: true, hint: 'As you have it, e.g. 279.50 (per USD) or 0.0035778 (to USD).' },
+      { name: 'exchange_rate.effective_date', label: 'Rate: effective date', type: 'date', createOnly: true },
+      { name: 'exchange_rate.source', label: 'Rate: source', createOnly: true, hint: 'e.g. Interbank close' },
+      { name: 'exchange_rate.notes', label: 'Rate: notes', type: 'textarea', createOnly: true },
     ],
+    liveNote: currencyRateNote,
     filters: [{ name: 'search' }],
     columns: [
       ['Code', r => r.code], ['Title', r => r.title], ['Symbol', r => r.symbol],
-      ['Latest rate → USD', r => r.latest_exchange_rate ? `${r.latest_exchange_rate.rate_to_usd} (${r.latest_exchange_rate.effective_date})` : '—'],
+      ['Base', r => r.is_base ? pill('base', 'ok') : ''],
+      ['Latest rate → base', r => r.is_base ? '1 (base)' : r.latest_exchange_rate ? `${r.latest_exchange_rate.rate_to_usd} (${r.latest_exchange_rate.effective_date})` : '—'],
     ] },
   { group: 'Setup', key: 'exchange-rates', label: 'Exchange Rates',
     fields: [
       { name: 'currency_id', label: 'Currency', type: 'ref', ref: 'currencies', required: true },
-      { name: 'rate_to_usd', label: 'Rate to USD', type: 'number', step: 'any', required: true, hint: 'e.g. PKR → USD is about 0.0035778175' },
+      { name: 'quote_direction', label: 'Quote direction', type: 'select', required: true, default: () => 'per_usd', options: quoteDirections,
+        hint: 'per USD: rate_to_usd = 1 / rate. to USD: rate_to_usd = rate. "USD" means the base currency, which needs no rate.' },
+      { name: 'quoted_rate', label: 'Rate', type: 'number', step: 'any', required: true, hint: 'As you have it, e.g. 279.50 (per USD) or 0.0035778 (to USD).' },
       { name: 'effective_date', type: 'date', required: true },
+      { name: 'source', hint: 'e.g. Interbank close' },
+      { name: 'notes', type: 'textarea' },
     ],
+    liveNote: rateConvertsTo,
     filters: [{ name: 'currency_id', label: 'Currency', type: 'ref', ref: 'currencies' }, { name: 'from_date', type: 'date' }, { name: 'to_date', type: 'date' }],
-    columns: [['Currency', r => r.currency?.code], ['Rate to USD', r => r.rate_to_usd, 'num'], ['Effective', r => r.effective_date]] },
+    columns: [
+      ['Currency', r => r.currency?.code],
+      ['Entered as', r => r.quoted_rate == null ? '' : `${trimNum(r.quoted_rate)} ${r.quote_direction === 'per_usd' ? 'per USD' : 'to USD'}`],
+      ['1 USD =', r => r.units_per_usd == null ? '' : `${trimNum(r.units_per_usd)} ${r.currency?.code || ''}`, 'num'],
+      ['Rate to USD', r => r.rate_to_usd, 'num'],
+      ['Effective', r => r.effective_date],
+      ['Source', r => r.source],
+    ] },
   { group: 'Setup', key: 'companies', label: 'Companies',
     fields: [
       { name: 'name', required: true }, { name: 'short_code' }, { name: 'note', type: 'textarea' },
@@ -1121,7 +1193,7 @@ async function renderBulkGrid(resKey) {
         else if (f.type === 'number') body[f.name] = isNaN(Number(String(v).replace(/,/g, ''))) ? v : Number(String(v).replace(/,/g, ''));
         else body[f.name] = v;
       }
-      payload.push(body); index.push(i);
+      payload.push(nestDotted(body)); index.push(i);
     });
     return { payload, index, problems };
   };
@@ -1250,7 +1322,9 @@ async function renderBulkGrid(resKey) {
     if (res.status === 201 || res.status === 200) {
       const made = [].concat(res.json.data);
       state.refCache = {};
+      const warned = made.flatMap((rec, i) => (rec.warnings || rec.exchange_rate?.warnings || []).map(w => `Row ${i + 1}: ${w}`));
       st.result = `<div class="banner" style="background:var(--ok-bg);color:var(--ok)">${esc(res.json.message || 'Saved')}</div>
+        ${warned.length ? `<div class="banner bad">${warned.map(esc).join('<br>')}</div>` : ''}
         <div style="overflow:auto"><table><thead><tr><th>ID</th>${r.columns.map(c => `<th>${esc(c[0])}</th>`).join('')}</tr></thead><tbody>${
           made.map(rec => `<tr><td>${rec.id}</td>${r.columns.map(c => `<td class="${c[2] || ''}">${cell(c[1](rec))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
       st.rows = Array.from({ length: 3 }, blank);
@@ -1260,7 +1334,8 @@ async function renderBulkGrid(resKey) {
     // "<key>.3.name" -> row 3, Name cell; "<key>.3" -> row 3; anything else -> banner.
     const general = [];
     for (const [k, msgs] of Object.entries(res.json?.errors || {})) {
-      const m = k.match(new RegExp(`^${bulkKey}\\.(\\d+)(?:\\.([\\w]+))?`)) || (st.bare ? k.match(/^(\d+)(?:\.(\w+))?/) : null);
+      // [\w.]+ so nested fields like "exchange_rate.quoted_rate" land on their cell.
+      const m = k.match(new RegExp(`^${bulkKey}\\.(\\d+)(?:\\.([\\w.]+))?`)) || (st.bare ? k.match(/^(\d+)(?:\.([\w.]+))?/) : null);
       const text = [].concat(msgs).join(' ');
       const row = m ? st.rows[index[+m[1]]] : null;
       if (!row) { general.push(`${k}: ${text}`); continue; }
@@ -1663,8 +1738,20 @@ async function openForm(r, row) {
   const action = editing ? 'edit' : 'create';
   const endpoint = editing ? `/finance/${r.key}/${row.id}/edit` : `/finance/${r.key}/create`;
   openDialog(editing ? `Edit ${r.label} #${row.id}` : (r.createLabel || `New ${r.label}`),
-    `<form id="recForm">${html}</form><div class="endpoint">POST <code>${esc(endpoint)}</code></div>`,
+    `<form id="recForm">${html}</form>${r.liveNote ? '<div class="banner" id="liveNote"></div>' : ''}<div class="endpoint">POST <code>${esc(endpoint)}</code></div>`,
     `<button data-close>Cancel</button><button class="primary" id="saveBtn">${editing ? 'Save' : (r.createLabel || 'Create')}</button>`);
+  if (r.liveNote) {
+    // Both notes need the currency list (to find the base); the currency form has no dropdown that loads it.
+    await loadRef('currencies');
+    const showNote = () => {
+      const html = r.liveNote($('#recForm'));
+      $('#liveNote').innerHTML = html;
+      $('#liveNote').style.display = html ? '' : 'none';
+    };
+    $('#recForm').addEventListener('input', showNote);
+    $('#recForm').addEventListener('change', showNote);
+    showNote();
+  }
 
   $('#saveBtn').onclick = async () => {
     const form = $('#recForm');
@@ -1681,19 +1768,20 @@ async function openForm(r, row) {
     for (const f of fields) if (f.required && body[f.name] === null) delete body[f.name];
 
     $('#saveBtn').disabled = true;
-    const res = await api('POST', endpoint, { body });
+    const res = await api('POST', endpoint, { body: nestDotted(body) });
     $('#saveBtn').disabled = false;
     form.querySelectorAll('.err').forEach(e => e.remove());
     if (res.status === 200 || res.status === 201) {
       $('#dlg').close();
       state.refCache = {};
       toast(res.json?.message || 'Saved');
+      for (const w of res.json?.data?.warnings || res.json?.data?.exchange_rate?.warnings || []) toast('Warning: ' + w, true);
       loadList();
       return;
     }
     $('#formErr').innerHTML = `<div class="banner bad">${esc(apiError(res))}</div>`;
     for (const [name, msgs] of Object.entries(res.json?.errors || {})) {
-      const holder = form.querySelector(`[data-field="${name.split('.')[0]}"]`);
+      const holder = form.querySelector(`[data-field="${CSS.escape(name)}"]`) || form.querySelector(`[data-field="${name.split('.')[0]}"]`);
       if (holder) holder.insertAdjacentHTML('beforeend', `<div class="err">${esc(msgs.join(' '))}</div>`);
     }
   };
